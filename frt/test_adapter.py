@@ -8,6 +8,23 @@ from discovery_coverage import get_points
 from distributed_crawl import load_shared_discovery
 
 class FRTOneSourceAcceptance(unittest.TestCase):
+    def test_no_cross_project_resource_defaults(self):
+        cfg=load(ROOT/"config.json")
+        self.assertEqual(cfg["hf_repo_id"],"hub-google/Foodradar-TW")
+        benchmark=(ROOT/"scripts/fr_pool_load_test.py").read_text()
+        self.assertIn("/functions/v1/frt-task-pool-benchmark",benchmark)
+        self.assertIn('foodradar-tw:task-pool-benchmark',benchmark)
+        self.assertNotIn("/functions/v1/fr-task-pool-benchmark",benchmark)
+        self.assertNotIn('foodradar:task-pool-benchmark',benchmark)
+        for filename in ("src/export_static_snapshots.py","scripts/spot_v2_hf.py"):
+            contents=(ROOT/filename).read_text()
+            self.assertIn("hub-google/Foodradar-TW",contents)
+            self.assertNotIn("hub-google/UberEat",contents)
+        provision=(ROOT/"scripts/provision_foodradar.py").read_text()
+        self.assertIn("fafagoback/FoodRadar-TW",provision)
+        self.assertNotIn("fafagoback/FoodRadar'",provision)
+        self.assertNotIn('fafagoback/FoodRadar"',provision)
+
     def test_exact_original_ue_coordinates(self):
         cfg=load(ROOT/"config.json")
         with open(ROOT/"data/seeds/taiwan_scan_points_3km_land_only.csv",newline="",encoding="utf-8-sig") as f:

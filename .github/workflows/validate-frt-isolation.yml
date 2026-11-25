@@ -1,0 +1,36 @@
+name: FRT isolated FR resources smoke test
+on:
+  push:
+    branches: [fix/frt-isolation-20261125]
+    paths: ['frt/**', '.github/workflows/validate-frt-isolation.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Activate exact FR core with FRT-only resource configuration
+        run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt 'PyYAML>=6,<7'
+      - name: Verify complete original FR code tests
+        run: env -u FR_DISCOVERY_SCOPE python -m unittest discover -s tests -v
+      - name: Verify FRT coordinates, FR schema, isolated storage and workflow parity
+        run: env -u FR_DISCOVERY_SCOPE python -m unittest frt.test_adapter frt.test_workflow_parity -v
+      - name: Confirm isolated benchmark requires valid GitHub OIDC
+        run: |
+          python - <<'PY'
+          import urllib.error,urllib.request
+          endpoint="https://unapiwajmgqqtdkixaab.supabase.co/functions/v1/frt-task-pool-benchmark"
+          request=urllib.request.Request(endpoint,data=b'{"op":"stats"}',headers={"Content-Type":"application/json"})
+          try:
+              urllib.request.urlopen(request,timeout=15)
+              raise RuntimeError("FRT benchmark exposed without authentication")
+          except urllib.error.HTTPError as exc:
+              if exc.code != 401:raise
+              print("FRT_BENCHMARK_DENIES_UNAUTHENTICATED_REQUEST=401")
+          PY

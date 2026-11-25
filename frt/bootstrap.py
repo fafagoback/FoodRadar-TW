@@ -108,6 +108,20 @@ def main():
             ("/functions/v1/fr-task-pool-clear", "/functions/v1/frt-task-pool-clear"),
             ("foodradar:task-pool-clear", "foodradar-tw:task-pool-clear")
         ])
+        # The FR benchmark is intentionally isolated per repository, just
+        # like the real task pool. Never send FRT load tests to FR endpoints.
+        replace_file("scripts/fr_pool_load_test.py", [
+            ("/functions/v1/fr-task-pool-benchmark", "/functions/v1/frt-task-pool-benchmark"),
+            ("foodradar:task-pool-benchmark", "foodradar-tw:task-pool-benchmark"),
+        ])
+        # FR retains legacy UberEat helper defaults for its own use, but FRT
+        # must not accidentally read or write the older UE dataset.
+        for path in ("src/export_static_snapshots.py", "scripts/spot_v2_hf.py"):
+            replace_file(path, [("hub-google/UberEat", settings["hf_repo_id"])])
+        # Never provision or modify the FR repository from an FRT runner.
+        replace_file("scripts/provision_foodradar.py", [
+            ("fafagoback/FoodRadar", "fafagoback/FoodRadar-TW"),
+        ])
         replace_file("scripts/configure_web.py", [("SINGLE_POINT: true", "SINGLE_POINT: false")])
         replace_file("web/config.js", [("SINGLE_POINT: true", "SINGLE_POINT: false")])
         # Output/diagnostic labels only. FRT 02/03 names remain consistent.
