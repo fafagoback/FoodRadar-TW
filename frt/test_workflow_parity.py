@@ -19,7 +19,7 @@ def original_steps(job):
 
 class WorkflowParity(unittest.TestCase):
     def test_only_ue_stage_is_added_to_fr_crawl(self):
-        upstream=load("crawl.yml")["jobs"]
+        upstream=load("crawl.yml",upstream=True)["jobs"]
         frt=load("crawl.yml")["jobs"]
         self.assertEqual(set(frt)-set(upstream),{"discovery_plan","national_discovery_workers"})
         for name in set(upstream)-{"discover_once"}:
@@ -43,7 +43,7 @@ class WorkflowParity(unittest.TestCase):
         self.assertTrue(added.issubset(set(allnames)))
     def test_02_and_03_are_original_fr_workflows(self):
         for filename in ("pages.yml","cleanup.yml"):
-            original=load(filename)["jobs"]
+            original=load(filename,upstream=True)["jobs"]
             derivative=load(filename)["jobs"]
             for name in original:
                 job=original_steps(derivative[name])
