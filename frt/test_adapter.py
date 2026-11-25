@@ -38,6 +38,7 @@ class FRTOneSourceAcceptance(unittest.TestCase):
                             "lon":point["longitude"],"county":point["county"]}]}
                     return point["id"],[store],1
                 with patch("national_discovery._scan",side_effect=fake_scan):
+                    (root/"data/discovery-parts").mkdir(parents=True)
                     for i in range(WORKERS):
                         worker(cfg,i,root=root)
                         p=root/"data/national-worker"

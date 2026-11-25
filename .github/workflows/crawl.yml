@@ -41,6 +41,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: 使用唯一 FR 核心程式
+        run: python3 frt/bootstrap.py
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -75,6 +77,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: 使用唯一 FR 核心程式
+        run: python3 frt/bootstrap.py
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -235,6 +239,8 @@ jobs:
       progress: ${{ steps.plan.outputs.progress }}
     steps:
       - uses: actions/checkout@v4
+      - name: 使用唯一 FR 核心程式
+        run: python3 frt/bootstrap.py
       - name: 檢查完成狀態，只在有缺漏時建立接手任務
         id: plan
         env:
