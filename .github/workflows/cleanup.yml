@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4
+      - name: 使用唯一 FR 核心程式
+        run: python3 frt/bootstrap.py
       - name: 清理歷史 Artifact 並產生中文報告
         env:
           GH_TOKEN: ${{ github.token }}

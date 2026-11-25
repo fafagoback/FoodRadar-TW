@@ -1,0 +1,58 @@
+name: FRT single FR source acceptance
+on:
+  push:
+    branches: [rebuild/fr-single-source]
+    paths: [.github/workflows/validate-single-source.yml, frt/**, config.json]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove FRT contains no duplicate FR core
+        run: |
+          set -euo pipefail
+          for path in src scripts web tests .github/actions; do
+            test ! -e "$path" || { echo "Duplicate core: $path"; exit 1; }
+          done
+          test "$(find .github/workflows -name '*.yml' | wc -l)" -eq 4
+      - name: Fetch exactly pinned FR core and apply FRT coordinates/credentials
+        run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Run FR regression suite
+        run: env -u FR_DISCOVERY_SCOPE python -m unittest discover -s tests -v
+      - name: Run real 1558-point FR-schema mocked 15-worker proof
+        run: env -u FR_DISCOVERY_SCOPE python -m unittest frt.test_adapter -v
+      - name: Check all three production workflow parsers
+        run: |
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          for name in ("crawl","pages","cleanup"):
+              p=Path(".github/workflows")/(name+".yml")
+              doc=yaml.safe_load(p.read_text())
+              assert "jobs" in doc and doc["jobs"]
+              print(name, len(doc["jobs"]), "jobs")
+          PY
+      - name: Check web syntax and immutable source identity
+        run: |
+          set -euo pipefail
+          for f in web/app.js web/static-catalog.js web/data-contract.js web/packed-turso.js; do node --check "$f"; done
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          cfg=json.loads(Path("config.json").read_text())
+          assert len(cfg["discovery_points"])==1558
+          assert cfg["hf_repo_id"]=="hub-google/Foodradar-TW"
+          assert cfg["discovery_scope"]=="custom"
+          assert Path("src/batch_crawl.py").is_file()
+          assert Path("src/compact_direct.py").is_file()
+          assert Path("src/national_discovery.py").is_file()
+          print("Validated original FR core + UE-only coordinate adapter")
+          PY
