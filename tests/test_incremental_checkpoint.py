@@ -107,16 +107,28 @@ class DirectCaptureMigrationTests(unittest.TestCase):
             with patch("state_checkpoint.direct_contract_digest",return_value="unreviewed-code"):
                 self.assertFalse(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":"reviewed-old"},root))
 
-    def test_real_layout_migration_exact_contract(self):
-        from state_checkpoint import (compatible_direct_contract, CODEC_UPGRADE, CODEC_OLD_LAYOUTS, CODEC_PREVIOUS_CURRENT_LAYOUTS,
-            CODEC_OLD_CONTRACTS, DIRECT_CONTRACTS, PREVIOUS_LAYOUT_CONTRACTS,
-            DIRECT_LAYOUT_CONTRACTS, _historical_digest,direct_contract_digest)
-        current=_historical_digest(ROOT,CODEC_UPGRADE,DIRECT_LAYOUT_CONTRACTS)
+    def test_frt_initial_layout_requires_exact_own_contract(self):
+        # FRT has its own Raw repository and begins with no FR legacy checkpoint.
+        # The codec, layout and strict digest contract remain the FR implementation.
+        from state_checkpoint import compatible_direct_contract, DIRECT_LAYOUT_CONTRACTS, direct_contract_digest
+        digest=hashlib.sha256()
+        for name in DIRECT_LAYOUT_CONTRACTS:
+            digest.update(name.encode()+b"\0")
+            digest.update((ROOT/name).read_bytes())
+        current=digest.hexdigest()
         self.assertEqual(direct_contract_digest(ROOT),current)
-        for old,files in [(r,DIRECT_LAYOUT_CONTRACTS) for r in CODEC_PREVIOUS_CURRENT_LAYOUTS]+[(r,PREVIOUS_LAYOUT_CONTRACTS) for r in CODEC_OLD_LAYOUTS]+[(r,DIRECT_CONTRACTS) for r in CODEC_OLD_CONTRACTS]:
-            previous=_historical_digest(ROOT,old,files)
-            self.assertTrue(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":previous},ROOT))
-        self.assertFalse(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":"unknown"},ROOT))
+        self.assertTrue(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":current},ROOT))
+        self.assertFalse(compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":"foreign-or-unknown"},ROOT))
+
+    def test_direct_checkpoint_rejects_foreign_hf_repository(self):
+        from state_checkpoint import restore_direct
+        with tempfile.TemporaryDirectory() as tmp:
+            cache=Path(tmp)
+            (cache/"manifest.json").write_text(json.dumps({"repo_id":"hub-google/FoodRadar","folder":"Raw","manifest_count":1}))
+            with patch("compact_direct.open_collection") as open_db:
+                self.assertIsNone(restore_direct([("Raw/batch/manifest.json",{},"f"*64)],
+                    {"hf_repo_id":"hub-google/Foodradar-TW","hf_folder":"Raw"},cache=cache))
+                open_db.assert_not_called()
 
     def test_real_reviewed_contract_digests(self):
         import subprocess

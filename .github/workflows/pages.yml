@@ -135,7 +135,7 @@ jobs:
           from urllib.request import Request, urlopen
           from urllib.error import HTTPError, URLError
           candidate=json.loads(Path('web/version.json').read_text(encoding='utf-8'))
-          url='https://fafagoback.github.io/FoodRadar/version.json?freshness='+candidate['version']
+          url='https://fafagoback.github.io/FoodRadar-TW/version.json?freshness='+candidate['version']
           try:
               with urlopen(Request(url,headers={'Cache-Control':'no-cache'}),timeout=25) as response:
                   previous=json.load(response)
@@ -210,7 +210,7 @@ jobs:
           from urllib.request import urlopen, Request
           from pathlib import Path
           expected = json.loads(Path('web/version.json').read_text(encoding='utf-8'))
-          base = 'https://fafagoback.github.io/FoodRadar/'
+          base = 'https://fafagoback.github.io/FoodRadar-TW/'
           for attempt in range(12):
               try:
                   url = base + 'version.json?_release=' + expected['version'] + '-' + str(attempt)

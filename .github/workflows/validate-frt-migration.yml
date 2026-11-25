@@ -1,0 +1,47 @@
+name: FRT one-time complete migration validation
+on:
+  push:
+    branches: [migration/fr-tw-v1]
+    paths: [.github/workflows/validate-frt-migration.yml, tests/**, src/**]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Full regression and JavaScript checks
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v
+          for file in web/app.js web/static-catalog.js web/data-contract.js web/packed-turso.js; do node --check "$file"; done
+      - name: Verify actual Taiwan point plan and coverage
+        run: |
+          python src/national_discovery.py plan
+          python - <<'PY'
+          import json
+          d=json.load(open("data/national-plan.json"))
+          p=d["points"]
+          counties={x["county"] for x in p}
+          districts={(x["county"],x["town"]) for x in p if x.get("town")}
+          print("FRT verified scan points",len(p),"counties",len(counties),"districts",len(districts),"legacy",sum(x["id"].startswith("legacy-") for x in p))
+          assert len(counties)==22 and len(districts)==368
+          PY
+      - name: Verify workflow syntax and 3 production stages
+        run: |
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          for name in ("crawl","pages","cleanup"):
+              doc=yaml.safe_load(Path(f".github/workflows/{name}.yml").read_text())
+              print(name, len(doc["jobs"]), "jobs")
+          PY

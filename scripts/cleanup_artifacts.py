@@ -209,7 +209,7 @@ def main():
             failures.append((a["id"], "清理後仍存在"))
     mb = lambda values: sum(a["size_in_bytes"] for a in values) / 1048576
     candidates = [a for group in targets.values() for a, _ in group]
-    lines = ["## FoodRadar 03｜儲存空間清理", "",
+    lines = ["## FRT 03｜儲存空間清理", "",
              "| 指標 | 實際結果 |", "|---|---|",
              f"| 模式 | {'僅盤點' if dry else '正式清理'} |",
              f"| 清理前 | {len(artifacts)} 個／{mb(artifacts):.2f} MB |",
