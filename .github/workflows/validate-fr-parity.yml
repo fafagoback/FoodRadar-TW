@@ -1,0 +1,59 @@
+name: FRT verify canonical FR workflow parity
+on:
+  push:
+    branches: [fix/fr-workflow-parity]
+    paths: [.github/workflows/validate-fr-parity.yml, .github/workflows/crawl.yml, frt/**]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify FRT contains no duplicate FR core
+        run: |
+          set -euo pipefail
+          for f in src scripts web tests worker .github/actions; do test ! -e "$f"; done
+          test "$(wc -l < data/seeds/taiwan_scan_points_3km_land_only.csv)" -eq 1559
+      - name: Load exact upstream FR source and FRT storage settings
+        run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt pyyaml
+      - name: Verify all FR core tests
+        run: env -u FR_DISCOVERY_SCOPE python -m unittest discover -s tests -v
+      - name: Verify original UE coordinates and genuine FR output contract
+        run: env -u FR_DISCOVERY_SCOPE python -m unittest frt.test_adapter -v
+      - name: Verify downstream 01, 02, 03 steps match FR source
+        run: env -u FR_DISCOVERY_SCOPE python -m unittest frt.test_workflow_parity -v
+      - name: Verify workflow syntax, no duplicate checkout, JS
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for filename in ("crawl.yml","pages.yml","cleanup.yml"):
+              doc=yaml.safe_load((Path(".github/workflows")/filename).read_text())
+              assert doc.get("jobs")
+              for job in doc["jobs"].values():
+                  steps=job.get("steps",[])
+                  for idx,step in enumerate(steps):
+                      if step.get("uses")=="actions/checkout@v4":
+                          assert steps[idx+1].get("run")=="python3 frt/bootstrap.py",filename
+              print(filename, "bootstrap correct")
+          PY
+          for file in web/app.js web/packed-turso.js web/static-catalog.js web/data-contract.js; do node --check "$file"; done
+      - name: Verify HF FRT new dataset access before full crawl
+        env:
+          HF_TOKEN: \${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from huggingface_hub import HfApi
+          cfg=json.load(open("config.json"))
+          repo=HfApi(token=os.environ["HF_TOKEN"]).repo_info(repo_id=cfg["hf_repo_id"],repo_type="dataset")
+          assert repo.id==cfg["hf_repo_id"]
+          print("FRT_HF_DATASET_ACCESS_VERIFIED="+repo.id)
+          PY
