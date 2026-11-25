@@ -124,8 +124,8 @@ def main():
         if source.count(marker) != 1:
             raise RuntimeError("FR historical-contract test changed; review required")
         test_file.write_text(source.replace(marker,
-            '    @unittest.skip("FRT has no FR legacy Git history; FRT current digest is tested separately")\\n'+marker
-            .replace("\\n","\n")),encoding="utf-8")
+            '    @unittest.skip("FRT has no FR legacy Git history; FRT current digest is tested separately")\n'
+            + marker),encoding="utf-8")
         # FR native configuration is the authoritative structure; only FRT
         # scanning coordinates and storage identity are overlaid.
         frconfig=json.loads((old/"config.json").read_text(encoding="utf-8"))
