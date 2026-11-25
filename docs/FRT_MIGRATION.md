@@ -7,3 +7,5 @@ Schedule: 06:30 and 18:30 Taiwan time, then pages only after successful data/qua
 The first national run must validate capacity and speed; the FR static size safety limit is intentionally unchanged.
 
 FRT has an independent checkpoint provenance: FR historical checkpoints are not imported. Unknown contract revisions fail closed and rebuild from the new FRT Raw archive.
+
+Source FR commit: `58ee74e4acb8ddea9c0eabdcd04877705646360a`. Migration validation run 45568262900: 324 tests, 323 passed and 1 legacy-only test skipped; 2,142 points, 1,558 original points, 22 counties and 368 districts. FRT isolated database pool smoke test passed. Full-scale live crawl and actual artifact size still need verification.
