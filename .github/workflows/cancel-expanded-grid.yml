@@ -1,0 +1,27 @@
+name: FRT cancel superseded expanded grid
+on:
+  push:
+    branches: [maintenance/cancel-expanded-grid]
+    paths: [.github/workflows/cancel-expanded-grid.yml]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel only the obsolete run using expanded coordinates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "$GH_REPO" = "fafagoback/FoodRadar-TW"
+          run=45568467839
+          info="$(gh api "repos/$GH_REPO/actions/runs/$run")"
+          test "$(jq -r .head_sha <<< "$info")" = "8f6036034fef47822de374704f160eb41163c2f1"
+          if [ "$(jq -r .status <<< "$info")" != completed ]; then
+            gh api --method POST "repos/$GH_REPO/actions/runs/$run/cancel" >/dev/null
+          fi
+          gh api "repos/$GH_REPO/actions/runs/$run" --jq '{id,status,conclusion}'
