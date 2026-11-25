@@ -18,6 +18,11 @@
     const n = Number(value);
     return Number.isFinite(n) && n > 0 ? n : null;
   }
+  // Shared unit-equivalent price for all product lists and historical trends.
+  // Direct discounted menu prices (e.g. 7折) are already payable prices.
+  // V2: never invent a payable price from offer text or category labels.
+  // Read the verified effective_price field instead; legacy callers get null.
+  function unitPrice() { return null; }
   function product(row) {
     const price = positive(row.price ?? row.curr_raw_price);
     const quantity = positive(row.quantity ?? row.curr_qty) || 1;
@@ -30,7 +35,12 @@
   }
   function money(value) {
     const n = positive(value);
-    return n === null ? '價格未提供' : '$' + n.toLocaleString('zh-TW', {maximumFractionDigits: 2});
+    return n === null ? '價格未提供' : '$' + n.toLocaleString('zh-TW', {minimumFractionDigits: 0, maximumFractionDigits: 0});
   }
-  root.UBER_DATA_CONTRACT = {city, positive, product, money};
+  function unitMoney(value) {
+    const n = positive(value);
+    const decimals = Number.isInteger(n) ? 0 : 2;
+    return n === null ? '價格未提供' : String.fromCharCode(36) + n.toLocaleString('zh-TW', {minimumFractionDigits: decimals, maximumFractionDigits: 2});
+  }
+  root.UBER_DATA_CONTRACT = {city, positive, product, money, unitPrice, unitMoney};
 })(typeof window === 'undefined' ? globalThis : window);

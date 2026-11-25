@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  
+
   <!-- 強制防快取標頭 (保證每次進站向伺服器驗證最新內容) -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  
-  <title>UberEats 特價與新品雷達</title>
-  
+
+  <title>FoodRadar</title>
+
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -34,10 +34,10 @@
   </script>
 
   <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
-  
+  <script defer src="https://unpkg.com/lucide@latest"></script>
+
   <!-- Chart.js CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <!-- 網站圖示 Favicon 與 Apple Touch Icon -->
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -48,8 +48,8 @@
   <!-- 動態時間戳記防快取載入器 (CSS & Config & Favicon) -->
   <script>
     (function() {
-      window.__APP_LOAD_TIME__ = Date.now();
-      
+      window.__APP_LOAD_TIME__ = '__FOODRADAR_RELEASE__';
+
       // 動態更新 Favicon 防止快取地球圖示
       const iconLink = document.createElement('link');
       iconLink.rel = 'icon';
@@ -62,7 +62,7 @@
       link.rel = 'stylesheet';
       link.href = 'style.css?_t=' + window.__APP_LOAD_TIME__;
       document.head.appendChild(link);
-      
+
       // 同步載入 config.js (帶時間戳記)
       document.write('<script src="config.js?_t=' + window.__APP_LOAD_TIME__ + '"><\/script>');
     })();
@@ -76,14 +76,14 @@
   <!-- ================================================================= -->
   <header class="sticky top-0 z-40 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-      
+
       <!-- 品牌標誌與標題 -->
       <div class="flex items-center space-x-3">
         <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center text-white shadow-md shadow-emerald-500/20">
           <i data-lucide="radar" class="w-6 h-6"></i>
         </div>
         <div>
-          <h1 class="text-lg font-bold tracking-tight text-slate-900 dark:text-white">UberEats 特價與新品雷達</h1>
+          <h1 class="text-lg font-bold tracking-tight text-slate-900 dark:text-white">FoodRadar</h1>
         </div>
       </div>
 
@@ -117,48 +117,21 @@
   <!-- ================================================================= -->
   <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 flex-1 w-full">
 
-    <!-- 全站共用位置篩選 -->
-    <section class="bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-emerald-100 dark:border-emerald-950/60 shadow-sm" aria-labelledby="location-filter-title">
-      <div class="flex flex-col lg:flex-row lg:items-end gap-4">
-        <div class="lg:flex-1">
-          <h2 id="location-filter-title" class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <i data-lucide="map-pin" class="w-4 h-4 text-emerald-600"></i>
-            店家距離篩選
-          </h2>
-          <p id="location-filter-status" class="mt-1 text-xs text-slate-500 dark:text-slate-400" aria-live="polite">目前顯示全台灣資料</p>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 lg:w-[610px]">
-          <label class="text-xs font-medium text-slate-600 dark:text-slate-300">
-            緯度
-            <input id="location-latitude" type="number" step="any" min="-90" max="90" inputmode="decimal" placeholder="例如 25.0330" class="mt-1 w-full px-3.5 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 dark:text-slate-100">
-          </label>
-          <label class="text-xs font-medium text-slate-600 dark:text-slate-300">
-            經度
-            <input id="location-longitude" type="number" step="any" min="-180" max="180" inputmode="decimal" placeholder="例如 121.5654" class="mt-1 w-full px-3.5 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 dark:text-slate-100">
-          </label>
-          <label class="text-xs font-medium text-slate-600 dark:text-slate-300">
-            範圍（KM）
-            <input id="location-radius" type="number" value="5" step="0.1" min="0.1" inputmode="decimal" class="mt-1 w-full px-3.5 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 dark:text-slate-100">
-          </label>
-        </div>
-        <div class="flex gap-2">
-          <button id="location-apply" type="button" class="px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors">套用</button>
-          <button id="location-clear" type="button" class="px-4 py-2 rounded-xl text-sm font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">顯示全台</button>
-        </div>
-      </div>
-      <p id="location-filter-error" class="hidden mt-3 text-xs font-medium text-red-600 dark:text-red-400" role="alert"></p>
+    <section class="bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-emerald-100 dark:border-emerald-950/60 shadow-sm">
+      <h2 class="text-sm font-bold text-slate-900 dark:text-white">目前資料涵蓋範圍</h2>
+      <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">目前以 25.1232468, 121.5295183 為採集配送位置；可查詢已收錄商品與店家，尚未完整涵蓋全台。價格與營業狀態以資料採集時間為準。</p>
     </section>
 
     <!-- 1. 頂部四大關鍵數據卡片 (Quick Metrics) -->
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      
+
       <!-- 卡片 1: 今日大特價 -->
       <div id="stat-card-discount" class="radar-card cursor-pointer bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-red-100 dark:border-red-950/50 shadow-sm hover:border-red-300 dark:hover:border-red-800 relative overflow-hidden group">
         <div class="absolute top-0 right-0 w-24 h-24 bg-red-500/5 rounded-full -mr-6 -mt-6 group-hover:scale-125 transition-transform duration-500"></div>
         <div class="flex items-center justify-between">
           <span class="text-xs font-semibold tracking-wider text-red-600 dark:text-red-400 uppercase flex items-center gap-1">
             <i data-lucide="flame" class="w-3.5 h-3.5"></i>
-            降價 ≥ 30% 大特價
+            7 天低價 ≥ 30%
           </span>
           <span class="p-2 rounded-xl bg-red-50 dark:bg-red-950/80 text-red-600 dark:text-red-400">
             <i data-lucide="trending-down" class="w-4 h-4"></i>
@@ -229,15 +202,15 @@
     <!-- 2. 分頁標籤導航列 (Tab Navigation) -->
     <div class="border-b border-slate-200 dark:border-slate-800">
       <nav class="flex space-x-2 sm:space-x-4 overflow-x-auto pb-2 scrollbar-none" aria-label="Tabs">
-        
+
         <button class="nav-tab active flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition-all whitespace-nowrap bg-red-500 text-white shadow-md shadow-red-500/20" data-target="tab-discounts">
           <i data-lucide="flame" class="w-4 h-4"></i>
-          今日大特價 (-30%+)
+          7 天低價 (-30%+)
         </button>
 
         <button class="nav-tab flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition-all whitespace-nowrap text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800" data-target="tab-stores">
           <i data-lucide="store" class="w-4 h-4"></i>
-          新進店家速報
+          店家搜尋與新店
         </button>
 
         <button class="nav-tab flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition-all whitespace-nowrap text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800" data-target="tab-products">
@@ -252,21 +225,21 @@
 
         <button class="nav-tab flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition-all whitespace-nowrap text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800" data-target="tab-global-search">
           <i data-lucide="search" class="w-4 h-4"></i>
-          全庫商品即時檢索
+          已採集商品搜尋
         </button>
 
       </nav>
     </div>
 
     <!-- ================================================================= -->
-    <!-- 3. TAB 1: 今日大特價 (-30%+) -->
+    <!-- 3. TAB 1: 7 天低價 (-30%+) -->
     <!-- ================================================================= -->
     <section id="tab-discounts" class="tab-content space-y-5">
-      
+
       <!-- 篩選與控制面板 -->
       <div class="bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          
+
           <!-- 關鍵字搜尋 -->
           <div class="relative">
             <i data-lucide="search" class="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
@@ -287,8 +260,8 @@
           <!-- 最低現省金額選單 -->
           <div class="relative">
             <select id="discount-savings-select" class="w-full px-3.5 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-red-500 text-slate-800 dark:text-slate-100 appearance-none pr-8">
-              <option value="0">💰 省下金額不拘 ($0+)</option>
-              <option value="20" selected>💰 最少現省 $20 (防雜訊推薦)</option>
+              <option value="0" selected>💰 省下金額不拘 ($0+)</option>
+              <option value="20">💰 最少現省 $20</option>
               <option value="50">💰 最少現省 $50</option>
               <option value="100">💰 最少現省 $100 (高價位省最大)</option>
             </select>
@@ -319,6 +292,7 @@
         </div>
       </div>
 
+      <p id="discounts-coverage" class="text-xs text-slate-500 dark:text-slate-400" aria-live="polite">正在確認本批有效價格及前次比較基準...</p>
       <!-- 特價卡片展示區 -->
       <div id="discounts-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <!-- JS 動態渲染卡片 -->
@@ -333,7 +307,7 @@
           <i data-lucide="tag" class="w-8 h-8"></i>
         </div>
         <h3 class="text-base font-bold text-slate-800 dark:text-slate-200">目前沒有符合該條件的特價商品</h3>
-        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">請嘗試調低降幅門檻或搜尋其他關鍵字</p>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">本區依最新有效單價與前七天最高有效單價比較。歷史觀測不足時，清單可能為零；目前平台優惠請看「折扣活動專區」。</p>
       </div>
 
     </section>
@@ -346,9 +320,9 @@
         <div>
           <h2 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <i data-lucide="sparkles" class="w-5 h-5 text-emerald-500"></i>
-            全新進駐店家情報
+            店家搜尋與新店情報
           </h2>
-          <p class="text-xs text-slate-500 dark:text-slate-400">最新採集批次首度發現之全新餐飲店家（每頁 50 筆）</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">搜尋全部店家，或查看近七日首次出現的新店（每頁 50 筆）</p>
         </div>
         <span class="text-xs px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 font-mono font-bold" id="new-stores-counter">載入中...</span>
       </div>
@@ -360,12 +334,16 @@
           <div class="relative sm:col-span-1">
             <i data-lucide="search" class="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
             <input type="text" id="store-search-input" placeholder="搜尋店家名稱或地址..." class="w-full pl-10 pr-4 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 dark:text-slate-100">
+            <select id="store-scope-select" aria-label="店家範圍" class="mt-2 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 text-sm">
+              <option value="all" selected>全部已採集店家</option>
+              <option value="new">近七日新店家</option>
+            </select>
           </div>
 
           <!-- 縣市選單 -->
           <div class="relative">
             <select id="store-city-select" class="w-full px-3.5 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 dark:text-slate-100 appearance-none pr-8">
-              <option value="全部" selected>🗺️ 全台灣 (全部縣市)</option>
+              <option value="全部" selected>🗺️ 全部縣市</option>
               <option value="台北市">📍 台北市</option>
               <option value="新北市">📍 新北市</option>
               <option value="桃園市">📍 桃園市</option>
@@ -431,6 +409,11 @@
         </div>
         <span class="text-xs px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 font-mono font-bold" id="new-products-counter">0 道新品</span>
       </div>
+      <div class="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+        <label for="product-search-input" class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">搜尋新上架商品或店家</label>
+        <input type="search" id="product-search-input" autocomplete="off" placeholder="輸入菜色或店家名稱…"
+          class="w-full max-w-lg px-4 py-2.5 text-sm rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 dark:text-slate-100">
+      </div>
 
       <div id="new-products-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <!-- JS 動態渲染卡片 -->
@@ -458,7 +441,7 @@
             <i data-lucide="gift" class="w-5 h-5 text-purple-500"></i>
             折扣活動專區
           </h2>
-          <p class="text-xs text-slate-500 dark:text-slate-400">全自動辨識買一送一、多件折抵與促銷活動，折算實質單件價格（每頁 50 筆）</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">平台標示優惠與 FoodRadar 歷史實質降價 30%+ 均納入；兩種判斷獨立顯示（每頁 50 筆）</p>
         </div>
         <span class="text-xs px-2.5 py-1 rounded-lg bg-purple-50 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300 font-mono font-bold" id="promos-counter">載入中...</span>
       </div>
@@ -476,11 +459,10 @@
           <div class="relative">
             <select id="promo-type-select" class="w-full px-3.5 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-purple-500 text-slate-800 dark:text-slate-100 appearance-none pr-8">
               <option value="全部" selected>🎁 全部優惠型態</option>
-              <option value="買一送一">🔥 買一送一 / 買多送多</option>
-              <option value="半價">⚡ 第2件半價</option>
-              <option value="加1元">💰 加1元多1件</option>
+              <option value="平台優惠">🏷️ 平台標示優惠</option>
+              <option value="實質降價30">📉 FoodRadar 實質降價 30%+</option>
+              <option value="買一送一">🔥 同品買 X 送 Y</option>
               <option value="折">🏷️ 折數優惠</option>
-              <option value="多入">📦 多件多入特惠組</option>
             </select>
             <i data-lucide="chevron-down" class="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"></i>
           </div>
@@ -518,22 +500,22 @@
     <!-- 7. TAB 5: 全庫商品即時檢索 (Global Search & Catalog) -->
     <!-- ================================================================= -->
     <section id="tab-global-search" class="tab-content hidden space-y-5">
-      
+
       <!-- 搜尋工具列 (v7.0 湖倉百萬級篩選) -->
       <div class="bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
           <div class="flex items-center gap-2">
             <h2 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
               <i data-lucide="database" class="w-4 h-4 text-emerald-500"></i>
-              全台全品庫百萬即時檢索
+              已採集商品搜尋與比價
             </h2>
             <span id="lakehouse-badge" class="px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 flex items-center gap-1">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span>DuckDB 湖倉引擎</span>
+              <span>已收錄商品</span>
             </span>
           </div>
           <div class="text-xs text-slate-500 dark:text-slate-400">
-            支援全台各縣市商品即時過濾、分頁與快速搜尋
+            依最近採集資料篩選、排序、分頁與搜尋（並非即時平台報價）
           </div>
         </div>
 
@@ -547,7 +529,7 @@
           <!-- 縣市選單 -->
           <div class="relative">
             <select id="global-city-select" class="w-full px-3.5 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-800 dark:text-slate-100 appearance-none pr-8">
-              <option value="全部" selected>🗺️ 全台灣 (全部縣市)</option>
+              <option value="全部" selected>🗺️ 全部縣市</option>
               <option value="台北市">📍 台北市</option>
               <option value="新北市">📍 新北市</option>
               <option value="桃園市">📍 桃園市</option>
@@ -602,16 +584,16 @@
   <!-- ================================================================= -->
   <!-- 價格走勢圖彈窗 (Price Trend Modal) -->
   <!-- ================================================================= -->
-  <div id="price-history-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+  <div id="price-history-modal" role="dialog" aria-modal="true" aria-labelledby="modal-product-name" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
     <div class="modal-content bg-white dark:bg-slate-900 rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4">
-      
+
       <!-- 彈窗頂部 -->
       <div class="flex items-start justify-between">
         <div>
           <span class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider" id="modal-store-name">店家名稱</span>
           <h3 class="text-lg font-bold text-slate-900 dark:text-white mt-0.5" id="modal-product-name">商品名稱</h3>
         </div>
-        <button id="modal-close-btn" class="p-2 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+        <button id="modal-close-btn" aria-label="關閉價格歷史" class="p-2 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
           <i data-lucide="x" class="w-5 h-5"></i>
         </button>
       </div>
@@ -641,8 +623,8 @@
       <!-- 彈窗底部操作 -->
       <div class="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800">
         <span class="text-xs text-slate-400 font-mono" id="modal-product-id">ID: ...</span>
-        <a id="modal-order-btn" href="#" target="_blank" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 transition-all">
-          <span>🛒 前往 Uber Eats 下單</span>
+        <a id="modal-order-btn" href="#" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 transition-all">
+          <span>🛒 前往下單</span>
           <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
         </a>
       </div>
@@ -652,13 +634,16 @@
 
   <!-- 底部 Footer -->
   <footer class="mt-auto border-t border-slate-200 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50 py-4 text-center text-xs text-slate-400">
-    <p>© 2026 UberEats Radar • 外送平台價格與商品情報監控分析系統 • 邊緣靜態快照與 CDN 極速發布</p>
+    <p>© 2026 FoodRadar • 外送平台價格與商品情報監控分析系統 • 邊緣靜態快照與 CDN 極速發布</p>
   </footer>
 
   <!-- 浮動提示 Toast (Toast Notification Container) -->
   <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4 sm:px-0"></div>
 
-  <script src="data-contract.js"></script>
+  <!-- Read the unit-price contract from the same release as app.js (no stale browser cache). -->
+  <script>
+    document.write('<script src="data-contract.js?_t=' + (window.__APP_LOAD_TIME__ || Date.now()) + '"><\/script>');
+  </script>
   <!-- 清理舊快取、手機 bfcache 喚醒更新與動態載入 App Core JS -->
   <script>
     (function() {
@@ -667,13 +652,6 @@
         navigator.serviceWorker.getRegistrations().then(function(registrations) {
           for (var i = 0; i < registrations.length; i++) {
             registrations[i].unregister();
-          }
-        }).catch(function() {});
-      }
-      if ('caches' in window) {
-        caches.keys().then(function(names) {
-          for (var i = 0; i < names.length; i++) {
-            caches.delete(names[i]);
           }
         }).catch(function() {});
       }

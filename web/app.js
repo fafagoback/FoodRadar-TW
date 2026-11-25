@@ -1,15 +1,17 @@
 /**
- * UberEats Radar - 前端分析儀表板核心互動邏輯
- * 方案 C: 邊緣靜態快照與 Jamstack CDN 極速架構 (0ms 本地記憶體即時檢索 + DuckDB-WASM 邊緣湖倉)
+ * FoodRadar - 前端分析儀表板核心互動邏輯
+ * FoodRadar：資料從 Hugging Face Verified Raw 編譯為 GitHub Pages 靜態索引
  * 完整全資料集分頁展示 (每頁 50 筆，無截斷限制)
  * [Live Sync Support]
  */
 
 const PAGE_SIZE = 50;
-const LOCATION_STORAGE_KEY = 'uber-radar-location-filter-v1';
+const LOCATION_STORAGE_KEY = 'foodradar-location-filter-v1';
 
 let APP_STATE = {
   isServerMode: false,
+  fastMode: false,
+  loadedTabs: new Set(),
   currentTab: 'tab-discounts',
   stats: {},
   
@@ -51,13 +53,14 @@ let APP_STATE = {
   filters: {
     // Tab 1
     discountMinPct: 30,
-    discountMinSavings: 20,
+    discountMinSavings: 0,
     discountSort: 'discount_desc',
     discountCategory: '全部',
     discountSearch: '',
 
     // Tab 2
     storeSearch: '',
+    storeScope: 'all',
     storeCity: '全部',
     storeSort: 'rating_desc',
 
@@ -76,83 +79,6 @@ let APP_STATE = {
   }
 };
 
-// DuckDB-WASM 邊緣 SQL 湖倉實例
-let DUCKDB_INSTANCE = null;
-let DUCKDB_CONN = null;
-let DUCKDB_INITIALIZING = false;
-let DUCKDB_READY = false;
-const REGISTERED_PARQUET_TABLES = new Set();
-
-async function ensureParquetRegistered(tableName) {
-  if (!DUCKDB_INSTANCE || !DUCKDB_CONN) return false;
-  if (REGISTERED_PARQUET_TABLES.has(tableName)) return true;
-
-  const duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.28.0/+esm');
-
-  let localUrl = '';
-  let remoteUrl = '';
-
-  if (tableName === 'taiwan_catalog.parquet') {
-    localUrl = new URL('./data/taiwan_catalog_latest.parquet', window.location.href).href;
-    remoteUrl = (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.PARQUET_CATALOG_URL) 
-      || 'https://huggingface.co/datasets/hub-google/UberEat/resolve/main/Parquet/taiwan_catalog_latest.parquet';
-  } else {
-    // 縣市分區切片檔 (例如 catalog_taipei.parquet)
-    localUrl = new URL(`./data/partitions/${tableName}`, window.location.href).href;
-    const partitionsBase = (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.PARQUET_PARTITIONS_BASE_URL)
-      || 'https://huggingface.co/datasets/hub-google/UberEat/resolve/main/Parquet/partitions';
-    remoteUrl = `${partitionsBase.replace(/\/+$/, '')}/${tableName}`;
-  }
-
-  // 1. 先檢測本地是否存在切片 (快速 HEAD 探測，避免把 404 HTML 註冊到 DuckDB)
-  let targetUrl = '';
-  if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
-    try {
-      const headRes = await Promise.race([
-        fetch(localUrl, { method: 'HEAD', cache: 'no-store' }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 1200))
-      ]);
-      if (headRes && headRes.ok) {
-        targetUrl = localUrl;
-        console.log(`🎯 [DuckDB-WASM] 命中本地切片: ${tableName}`);
-      }
-    } catch (e) {
-      // 本地無此切片，切換遠端
-    }
-  }
-
-  if (!targetUrl) {
-    targetUrl = remoteUrl;
-    console.log(`🌐 [DuckDB-WASM] 使用遠端 Hugging Face 湖倉: ${tableName}`);
-  }
-
-  // 2. 註冊至 DuckDB (先 dropFile 避免重名註冊錯誤)
-  try {
-    await DUCKDB_INSTANCE.dropFile(tableName).catch(() => {});
-    await DUCKDB_INSTANCE.registerFileURL(tableName, targetUrl, duckdb.DuckDBDataProtocol.HTTP, false);
-    await DUCKDB_CONN.query(`SELECT COUNT(*) FROM '${tableName}' LIMIT 1`);
-    REGISTERED_PARQUET_TABLES.add(tableName);
-    console.log(`✅ [DuckDB-WASM] 成功連線切片: ${tableName}`);
-    return true;
-  } catch (err) {
-    console.warn(`⚠️ [DuckDB-WASM] 切片連線失敗: ${tableName}`, err);
-    // 若原 targetUrl 失敗且原本嘗試本地，嘗試遠端
-    if (targetUrl === localUrl && remoteUrl) {
-      try {
-        await DUCKDB_INSTANCE.dropFile(tableName).catch(() => {});
-        await DUCKDB_INSTANCE.registerFileURL(tableName, remoteUrl, duckdb.DuckDBDataProtocol.HTTP, false);
-        await DUCKDB_CONN.query(`SELECT COUNT(*) FROM '${tableName}' LIMIT 1`);
-        REGISTERED_PARQUET_TABLES.add(tableName);
-        console.log(`✅ [DuckDB-WASM] 遠端切片備援成功: ${tableName}`);
-        return true;
-      } catch (err2) {
-        console.error(`❌ [DuckDB-WASM] 遠端切片備援亦失敗: ${tableName}`, err2);
-      }
-    }
-    return false;
-  }
-}
-
 // -----------------------------------------------------------------------------
 // 0. 版本追蹤與即時發佈自動偵測
 // -----------------------------------------------------------------------------
@@ -167,13 +93,13 @@ async function checkVersionUpdate(isInitial = false) {
 
     if (isInitial) {
       CURRENT_VERSION = info.version;
-      console.log(`[UberEats Radar] 當前系統版本: ${CURRENT_VERSION} (${info.buildTime || '最新'})`);
+      console.log(`[FoodRadar] 當前系統版本: ${CURRENT_VERSION} (${info.buildTime || '最新'})`);
       return;
     }
 
     if (CURRENT_VERSION && info.version !== CURRENT_VERSION) {
-      console.log(`[UberEats Radar] 發現新版本發佈: ${info.version} (目前: ${CURRENT_VERSION})，準備自動更新...`);
-      showToast('發現新版本發佈', '系統正在為您載入最新快照資料...', 'external', 2500);
+      console.log(`[FoodRadar] 發現新版本發佈: ${info.version} (目前: ${CURRENT_VERSION})，準備自動更新...`);
+      showToast('發現新版本發佈', '系統正在為您載入最新版本...', 'external', 2500);
       setTimeout(() => {
         window.location.reload();
       }, 1200);
@@ -198,75 +124,7 @@ function startVersionWatcher() {
 }
 
 // -----------------------------------------------------------------------------
-// DuckDB-WASM 邊緣 SQL 查詢引擎 (v7.0 Hugging Face 百萬大數據湖倉)
-// -----------------------------------------------------------------------------
-async function initDuckDBEngine() {
-  if (DUCKDB_READY || DUCKDB_INITIALIZING) return;
-  if (!window.UBER_RADAR_CONFIG || window.UBER_RADAR_CONFIG.ENABLE_DUCKDB === false) return;
-
-  DUCKDB_INITIALIZING = true;
-  const badgeEl = document.getElementById('lakehouse-badge');
-  if (badgeEl) {
-    badgeEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span><span>連線湖倉中...</span>`;
-    badgeEl.className = "px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 border border-amber-200 dark:border-amber-800 flex items-center gap-1";
-  }
-
-  try {
-    const initPromise = (async () => {
-      const duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.28.0/+esm');
-      const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
-      const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
-
-      const worker = await duckdb.createWorker(bundle.mainWorker);
-      const logger = new duckdb.ConsoleLogger();
-      const db = new duckdb.AsyncDuckDB(logger, worker);
-      await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-
-      const conn = await db.connect();
-      DUCKDB_INSTANCE = db;
-      DUCKDB_CONN = conn;
-
-      // 嘗試預先快取台北市切片 (最常用分區，20MB，非阻塞)
-      ensureParquetRegistered('catalog_taipei.parquet').catch(() => null);
-      return true;
-    })();
-
-    // 8 秒逾時防護，若逾時則無縫維持本地快照模式
-    await Promise.race([
-      initPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('DuckDB 連線超時')), 8000))
-    ]);
-
-    DUCKDB_READY = true;
-    console.log('✅ [DuckDB-WASM] 湖倉 SQL 查詢引擎已就緒');
-
-    if (badgeEl) {
-      badgeEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span><span>DuckDB 湖倉在線</span>`;
-      badgeEl.className = "px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 flex items-center gap-1";
-    }
-
-    // 若使用者當前正停留在全庫檢索分頁，無縫升級為湖倉深度檢索
-    if (APP_STATE.currentTab === 'tab-global-search') {
-      fetchGlobalProducts(APP_STATE.globalPage || 1);
-    }
-  } catch (err) {
-    console.warn('⚠️ [DuckDB-WASM] 湖倉連線未啟動 (維持本地極速快照檢索模式):', err);
-    DUCKDB_READY = false;
-    if (badgeEl) {
-      badgeEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span><span>本地快照搜尋</span>`;
-      badgeEl.className = "px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700 flex items-center gap-1";
-    }
-    if (APP_STATE.currentTab === 'tab-global-search') {
-      executeInMemoryGlobalSearch(APP_STATE.globalPage || 1);
-    }
-  } finally {
-    DUCKDB_INITIALIZING = false;
-  }
-}
-
-// -----------------------------------------------------------------------------
 // 初始化啟動
-// -----------------------------------------------------------------------------
 async function bootstrap() {
   initTheme();
   loadLocationFilter();
@@ -277,7 +135,6 @@ async function bootstrap() {
     lucide.createIcons();
   }
   startVersionWatcher();
-  initDuckDBEngine().catch(e => console.warn('DuckDB init background error:', e));
 }
 
 function validateLocationFilter(latitude, longitude, radiusKm) {
@@ -293,6 +150,7 @@ function validateLocationFilter(latitude, longitude, radiusKm) {
 }
 
 function loadLocationFilter() {
+  if (window.UBER_RADAR_CONFIG?.SINGLE_POINT) return;
   try {
     const saved = JSON.parse(localStorage.getItem(LOCATION_STORAGE_KEY) || 'null');
     if (!saved || !saved.enabled || validateLocationFilter(saved.latitude, saved.longitude, saved.radiusKm)) return;
@@ -444,304 +302,95 @@ async function executeTursoQuery(sql) {
 }
 
 let PACKED_TURSO_CLIENT = null;
+let storeSearchSequence = 0;
+let discountsSearchSequence = 0;
+let newProductsSearchSequence = 0;
+let promotionsRequestSequence = 0;
 async function getPackedTursoClient() {
-  if (!PACKED_TURSO_CLIENT) PACKED_TURSO_CLIENT = await import('./packed-turso.js');
+  if (!PACKED_TURSO_CLIENT) PACKED_TURSO_CLIENT = await import((window.UBER_RADAR_CONFIG?.ENABLE_STATIC ? './static-catalog.js' : './packed-turso.js') + '?_t=' + (window.__APP_LOAD_TIME__ || 'v2'));
   return PACKED_TURSO_CLIENT;
 }
 
+function showDatabaseUnavailable(error, gridId) {
+  console.error('FoodRadar dataset query failed:', error);
+  const message = /查詢範圍過大/.test(String(error?.message || ''))
+    ? '查詢範圍太廣，請增加關鍵字或縮小地區；網站不會為此下載大量資料。'
+    : '資料暫時無法載入，請稍後重新查詢。';
+  for (const id of gridId ? [gridId] : ['discounts-grid','new-stores-grid','new-products-grid','promos-grid','global-products-grid']) {
+    const el = document.getElementById(id);
+    if (el) { el.style.opacity = '1'; el.innerHTML = '';
+      const hint = document.createElement('p');hint.className='col-span-full py-12 text-center';
+      hint.textContent=message;el.append(hint); }
+  }
+  if (!gridId) {
+    updateStatsUI({latest_batch_formatted:'資料庫載入失敗',intelligence_unavailable:true});
+    for (const id of ['stat-total-stores','stat-total-products']) document.getElementById(id).textContent = '資料暫時無法取得';
+  }
+  return false;
+}
 async function loadFromTurso() {
-  console.log('⚡ [Turso] 正在載入 packed serving database...');
   try {
     const client = await getPackedTursoClient();
+    APP_STATE.loadedTabs = new Set(['tab-discounts']);
+    if (await client.hasWebIndex()) {
+      APP_STATE.fastMode = true;
+      const [meta,summary,loaded] = await Promise.all([client.metadata(),client.fastSummary(),fetchDiscounts(1)]);
+      if (loaded === false) return false;
+      updateStatsUI({
+        latest_batch:meta.latest_batch,
+        latest_batch_formatted:meta.latest_processed_at || formatBatchDate(meta.latest_batch),
+        active_products:Number(meta.published_searchable_products || meta.active_products || 0),
+        current_verified_products:Number(meta.current_verified_products || 0),
+        active_comparable_products:Number(meta.active_comparable_products || 0),
+        seven_day_reference_products:Number(meta.seven_day_reference_products || 0),
+        seven_day_verified_dates:meta.seven_day_verified_dates || [],
+        seven_day_history_incomplete:Boolean(meta.seven_day_history_incomplete),
+        active_platform_promotions:Number(meta.active_platform_promotions || 0),
+        total_monitored_stores:Number(meta.source_counts?.stores || 0),
+        total_monitored_products:Number(meta.source_counts?.products || 0),
+        big_discounts_count:Number(APP_STATE.discountsTotal || 0),
+        new_stores_count:Number(summary.stores || 0),
+        new_products_count:Number(summary.newProducts || 0),
+        promotions_count:Number(summary.promotions || 0),
+        max_savings_twd:Number(summary.maxSavings || 0)
+      });
+      return true;
+    }
+    APP_STATE.fastMode = false;
     const packed = await client.loadPackedDashboard(APP_STATE.locationFilter);
     const counts = packed.meta.source_counts || {};
-    const isLoc = Boolean(APP_STATE.locationFilter?.enabled);
-
-    // 建立範圍內店家經緯度與距離快速查找索引
     APP_STATE.storeLocationMap = new Map();
-    for (const s of (packed.stores || [])) {
-      const info = {
-        latitude: Number(s.latitude),
-        longitude: Number(s.longitude),
-        distance_km: Number(s.distance_km)
-      };
-      if (s.store_uuid) APP_STATE.storeLocationMap.set(String(s.store_uuid), info);
-      if (s.store_id) APP_STATE.storeLocationMap.set(String(s.store_id), info);
-      if (s.store_name) APP_STATE.storeLocationMap.set(String(s.store_name), info);
-      if (s.name) APP_STATE.storeLocationMap.set(String(s.name), info);
+    for (const store of packed.stores || []) {
+      const info = {latitude:Number(store.latitude),longitude:Number(store.longitude),distance_km:Number(store.distance_km)};
+      for (const key of [store.store_uuid,store.store_id,store.store_name,store.name]) if (key) APP_STATE.storeLocationMap.set(String(key),info);
     }
-
-    let baselineStats = {};
-    try {
-      const sRes = await fetch(getApiUrl('/api/stats')).catch(() => null);
-      if (sRes && sRes.ok) baselineStats = await sRes.json();
-    } catch (_) {}
-
-    // 取得爬蟲抓取資料的真實批次時間
-    const latestBatchTime = packed.meta?.latest_processed_at
-      || (packed.meta?.latest_batch ? formatBatchDate(packed.meta.latest_batch) : '')
-      || '資料版本待更新';
-
-    // 載入全量特價/新進店家/新品/促銷完整資料集
-    let rawDiscounts = [];
-    let newStores = [];
-    let newProducts = [];
-    let promotions = [];
-
-    try {
-      const [discRes, storesRes, prodsRes, promosRes] = await Promise.all([
-        fetch(getApiUrl('/api/discounts')).catch(() => null),
-        fetch(getApiUrl('/api/new-stores')).catch(() => null),
-        fetch(getApiUrl('/api/new-products')).catch(() => null),
-        fetch(getApiUrl('/api/promotions')).catch(() => null)
-      ]);
-      if (discRes && discRes.ok) {
-        const d = await discRes.json();
-        rawDiscounts = d.items || d || [];
-      }
-      if (storesRes && storesRes.ok) {
-        const d = await storesRes.json();
-        newStores = d.items || d || [];
-      }
-      if (prodsRes && prodsRes.ok) {
-        const d = await prodsRes.json();
-        newProducts = d.items || d || [];
-      }
-      if (promosRes && promosRes.ok) {
-        const d = await promosRes.json();
-        promotions = d.items || d || [];
-      }
-    } catch (snapErr) {
-      console.warn('快照資料預載警告:', snapErr);
-    }
-
-    // Never blend intelligence lists from a different release with current
-    // packed search data. Empty is safer than confidently showing stale or
-    // semantically incompatible results when the remote query later fails.
-    const packedBatch = String(packed.meta?.latest_batch || '');
-    const staticBatch = String(baselineStats.latest_batch || '');
-    if (!packedBatch || packedBatch !== staticBatch) {
-      console.warn(`靜態情報批次 ${staticBatch} 與 packed ${packedBatch} 不一致，已停用舊備援清單`);
-      baselineStats = {};
-      rawDiscounts = [];
-      newStores = [];
-      newProducts = [];
-      promotions = [];
-    }
-
-    APP_STATE.rawDiscounts = rawDiscounts;
-    APP_STATE.newStores = newStores;
-    APP_STATE.newProducts = newProducts;
-    APP_STATE.promotions = promotions;
     APP_STATE.allProducts = packed.products;
-
-    let statsData;
-    if (isLoc) {
-      // 範圍過濾模式：根據指定經緯度與半徑，真實計算周圍符合條件的各項數據
-      const filteredDiscounts = applyLocationFilter(rawDiscounts);
-      const filteredNewStores = applyLocationFilter(newStores);
-      const filteredNewProducts = applyLocationFilter(newProducts);
-      const filteredPromos = applyLocationFilter(promotions);
-
-      const maxSavings = filteredDiscounts.length > 0
-        ? Math.max(0, ...filteredDiscounts.map(i => Number(i.savings_amount || 0)))
-        : 0;
-
-      statsData = {
-        status: 'success',
-        latest_batch: packed.meta?.latest_batch || baselineStats.latest_batch || 'packed-v1',
-        latest_batch_formatted: latestBatchTime,
-        total_stores: packed.stores.length,
-        total_monitored_stores: packed.stores.length,
-        total_products: packed.products.length,
-        total_monitored_products: packed.products.length,
-        big_discounts_count: filteredDiscounts.length,
-        new_stores_count: filteredNewStores.length,
-        new_products_count: filteredNewProducts.length,
-        promotions_count: filteredPromos.length,
-        max_savings_twd: Math.round(maxSavings)
-      };
-    } else {
-      // 全台模式：呈現全台大盤真實爬蟲統計
-      statsData = {
-        status: 'success',
-        latest_batch: packed.meta?.latest_batch || baselineStats.latest_batch || 'packed-v1',
-        latest_batch_formatted: latestBatchTime,
-        total_stores: Number(packed.meta.active_stores || packed.stores.length || 0),
-        total_monitored_stores: Number(counts.stores || packed.meta.active_stores || 0),
-        total_products: Number(packed.meta.active_products || packed.products.length || 0),
-        total_monitored_products: Number(counts.products || packed.meta.products || 0),
-        big_discounts_count: Number(baselineStats.big_discounts_count ?? rawDiscounts.length),
-        new_stores_count: Number(newStores.length),
-        new_products_count: Number(baselineStats.new_products_count ?? newProducts.length),
-        promotions_count: Number(baselineStats.promotions_count ?? promotions.length),
-        max_savings_twd: Number(baselineStats.max_savings_twd || (rawDiscounts.length > 0 ? Math.max(...rawDiscounts.map(i => i.savings_amount || 0)) : 0))
-      };
-    }
-    statsData.intelligence_unavailable = !packedBatch || packedBatch !== staticBatch;
-    updateStatsUI(statsData);
-
-    // 渲染各頁籤
-    await fetchNewStores(1);
-    await fetchGlobalProducts(1);
-    await fetchDiscounts(1);
-    await fetchNewProducts(1);
-    await fetchPromotions(1);
-
-    // The checked-in JSON is only an offline fallback. Once all four live
-    // queries have completed, derive the cards from the same packed release
-    // that supplies the visible lists instead of the older fallback batch.
-    if (packed.meta?.latest_batch && packed.meta?.definition_version) {
-      const liveDiscounts = APP_STATE.discounts || [];
-      const liveStores = APP_STATE.filteredStores || [];
-      const liveProducts = APP_STATE.filteredProducts || [];
-      const livePromotions = APP_STATE.filteredPromotions || [];
-      if (liveDiscounts.length || liveStores.length || liveProducts.length || livePromotions.length) {
-        statsData.big_discounts_count = liveDiscounts.length;
-        statsData.new_stores_count = liveStores.length;
-        statsData.new_products_count = liveProducts.length;
-        statsData.promotions_count = livePromotions.length;
-        statsData.max_savings_twd = liveDiscounts.reduce((best, item) => Math.max(best, Number(item.savings_amount) || 0), 0);
-        statsData.intelligence_unavailable = false;
-        updateStatsUI(statsData);
-      }
-    }
-
-    const badgeEl = document.getElementById('lakehouse-badge');
-    if (badgeEl) {
-      badgeEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span><span>Turso 邊緣連線</span>`;
-      badgeEl.className = "px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 flex items-center gap-1";
-    }
-
-    console.log('✅ [Turso] 資料庫載入成功！');
+    const results = await Promise.all([fetchNewStores(1),fetchGlobalProducts(1),fetchDiscounts(1),fetchNewProducts(1),fetchPromotions(1)]);
+    if (results.some(result => result === false)) throw new Error('Dashboard query failed');
+    const discounts = APP_STATE.discounts || [];
+    updateStatsUI({latest_batch:packed.meta.latest_batch,
+      latest_batch_formatted:packed.meta.latest_processed_at || formatBatchDate(packed.meta.latest_batch),
+      active_products: Number(packed.meta.active_products || 0),
+      current_verified_products: Number(packed.meta.current_verified_products || 0),
+      active_comparable_products: Number(packed.meta.active_comparable_products || 0),
+      seven_day_reference_products: Number(packed.meta.seven_day_reference_products || 0),
+      archive_30pct_candidates: Number(packed.meta.archive_30pct_candidates || 0),
+      archive_reference_products: Number(packed.meta.archive_reference_products || 0),
+      seven_day_verified_dates: packed.meta.seven_day_verified_dates || [],
+      seven_day_history_incomplete: Boolean(packed.meta.seven_day_history_incomplete),
+      active_platform_promotions: Number(packed.meta.active_platform_promotions || 0),
+      total_monitored_stores:Number(counts.stores || packed.stores.length),
+      total_monitored_products:Number(counts.products || packed.products.length),
+      big_discounts_count:discounts.length,new_stores_count:(APP_STATE.filteredStores || []).length,
+      new_products_count:(APP_STATE.filteredProducts || []).length,promotions_count:(APP_STATE.filteredPromotions || []).length,
+      max_savings_twd:discounts.reduce((best,item)=>Math.max(best,Number(item.savings_amount)||0),0)});
     return true;
-  } catch (err) {
-    console.warn('⚠️ [Turso] 連線失敗，切換為靜態快照:', err);
-    return false;
-  }
+  } catch (error) { return showDatabaseUnavailable(error); }
 }
-
-// -----------------------------------------------------------------------------
-// 1. 靜態 API 網址映射與資料載入
-// -----------------------------------------------------------------------------
-function getApiUrl(endpoint) {
-  const base = (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.API_BASE_URL) || './data';
-  const cleanBase = base.replace(/\/+$/, '');
-  const path = endpoint.split('?')[0];
-
-  const map = {
-    '/api/stats': '/stats.json',
-    '/api/discounts': '/discounts.json',
-    '/api/new-stores': '/new_stores.json',
-    '/api/new-products': '/new_products.json',
-    '/api/promotions': '/promotions.json',
-    '/api/products': '/products.json',
-    '/api/history': '/history.json'
-  };
-
-  const mapped = map[path] || (path.endsWith('.json') ? path : `${path}.json`);
-  return `${cleanBase}${mapped}?_t=${Date.now()}`;
-}
-
 async function loadDashboardData() {
-  let loadedFromServer = false;
-
-  // 優先嘗試從 Turso 直連讀取即時大數據
-  if (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.ENABLE_TURSO) {
-    loadedFromServer = await loadFromTurso();
-  }
-
-  // 舊的靜態快照沒有座標。範圍模式下不可回退後假裝它是附近資料。
-  if (!loadedFromServer && APP_STATE.locationFilter.enabled) {
-    APP_STATE.rawDiscounts = [];
-    APP_STATE.newStores = [];
-    APP_STATE.newProducts = [];
-    APP_STATE.promotions = [];
-    APP_STATE.allProducts = [];
-    updateStatsUI({ latest_batch_formatted: 'Turso 暫時無法連線' });
-    await Promise.all([fetchDiscounts(1), fetchNewStores(1), fetchNewProducts(1), fetchPromotions(1)]);
-    executeInMemoryGlobalSearch(1);
-    showToast('附近資料載入失敗', 'Turso 暫時無法連線，未使用不含座標的舊快照。', 'alert-triangle', 5000);
-    return;
-  }
-
-  // 若 Turso 未啟用或連線失敗，自動無縫回退至靜態 JSON 快照
-  if (!loadedFromServer) {
-    try {
-      const [statsRes, discRes, storesRes, prodsRes, promosRes, catalogRes, histRes] = await Promise.all([
-        fetch(getApiUrl('/api/stats')),
-        fetch(getApiUrl('/api/discounts')),
-        fetch(getApiUrl('/api/new-stores')),
-        fetch(getApiUrl('/api/new-products')),
-        fetch(getApiUrl('/api/promotions')),
-        fetch(getApiUrl('/api/products')),
-        fetch(getApiUrl('/api/history')).catch(() => null)
-      ]);
-
-      if (statsRes && statsRes.ok) {
-        APP_STATE.isServerMode = true;
-        const statsData = await statsRes.json();
-        updateStatsUI(statsData);
-
-        if (discRes && discRes.ok) {
-          const d = await discRes.json();
-          APP_STATE.rawDiscounts = d.items || d || [];
-        }
-        if (storesRes && storesRes.ok) {
-          const d = await storesRes.json();
-          APP_STATE.newStores = d.items || d || [];
-        }
-        if (prodsRes && prodsRes.ok) {
-          const d = await prodsRes.json();
-          APP_STATE.newProducts = d.items || d || [];
-        }
-        if (promosRes && promosRes.ok) {
-          const d = await promosRes.json();
-          APP_STATE.promotions = d.items || d || [];
-        }
-        if (catalogRes && catalogRes.ok) {
-          const d = await catalogRes.json();
-          APP_STATE.allProducts = d.items || d || [];
-        }
-        if (histRes && histRes.ok) {
-          const d = await histRes.json();
-          APP_STATE.historyMap = d.history || {};
-        }
-
-        await fetchDiscounts(1);
-        await fetchNewStores(1);
-        await fetchNewProducts(1);
-        await fetchPromotions(1);
-        await fetchGlobalProducts(1);
-        loadedFromServer = true;
-      }
-    } catch (err) {
-      console.warn('無法連線靜態 API，切換為離線備援資料:', err);
-    }
-  }
-
-  if (!loadedFromServer) {
-    APP_STATE.isServerMode = false;
-    if (window.UBER_RADAR_DATA) {
-      const data = window.UBER_RADAR_DATA;
-      updateStatsUI(data.stats || {});
-      APP_STATE.rawDiscounts = data.big_discounts || [];
-      APP_STATE.newStores = data.new_stores || [];
-      APP_STATE.newProducts = data.new_products || [];
-      APP_STATE.promotions = data.promotions || [];
-      APP_STATE.allProducts = data.all_products || [];
-      APP_STATE.historyMap = data.history || {};
-      await fetchDiscounts(1);
-      await fetchNewStores(1);
-      await fetchNewProducts(1);
-      await fetchPromotions(1);
-      await fetchGlobalProducts(1);
-    } else {
-      console.warn('未偵測到備援資料。');
-    }
-  }
+  if (!window.UBER_RADAR_CONFIG?.ENABLE_STATIC && !window.UBER_RADAR_CONFIG?.ENABLE_TURSO) return showDatabaseUnavailable(new Error('FoodRadar static dataset is not configured'));
+  return loadFromTurso();
 }
-
 // -----------------------------------------------------------------------------
 // 2. 更新統計指標 UI
 // -----------------------------------------------------------------------------
@@ -749,6 +398,21 @@ function updateStatsUI(stats) {
   APP_STATE.stats = stats;
   document.getElementById('batch-time-text').textContent = stats.latest_batch_formatted || stats.latest_batch || '已載入';
   document.getElementById('stat-big-discounts').textContent = (stats.big_discounts_count ?? 0).toLocaleString();
+  const coverage = document.getElementById('discounts-coverage');
+  if (coverage) {
+    if (stats.intelligence_unavailable) {
+      coverage.textContent = '無法驗證本批可比較價格，請稍後重試。';
+    } else {
+      const current = Number(stats.active_products || 0);
+      const promos = Number(stats.active_platform_promotions || 0);
+      const week = Number(stats.seven_day_reference_products || 0);
+      const days = (stats.seven_day_verified_dates || []).length;
+      coverage.textContent = `目前已收錄可搜尋商品 ${current.toLocaleString()} 件，其中最近採集批次確認可外送 ${Number(stats.current_verified_products || 0).toLocaleString()} 件；${week.toLocaleString()} 件具有七日價格比較基準；最近七天有 ${days} 個菜單價格採集日；${promos.toLocaleString()} 件屬平台促銷。`;
+      if (stats.seven_day_history_incomplete) {
+        coverage.textContent += ' 注意：七日菜單價格紀錄不足，降價為菜單報價比較，並非外送下單保證。';
+      }
+    }
+  }
   document.getElementById('stat-new-stores').textContent = (stats.new_stores_count ?? stats.total_stores ?? 0).toLocaleString();
   document.getElementById('stat-new-products').textContent = (stats.new_products_count ?? 0).toLocaleString();
   document.getElementById('stat-promotions').textContent = (stats.promotions_count ?? 0).toLocaleString();
@@ -758,7 +422,7 @@ function updateStatsUI(stats) {
     for (const id of ['stat-big-discounts', 'stat-new-stores', 'stat-new-products', 'stat-promotions']) document.getElementById(id).textContent = '待同步';
   }
   document.getElementById('stat-total-stores').textContent = `總監控 ${(stats.total_monitored_stores || stats.total_stores || 0).toLocaleString()} 間`;
-  document.getElementById('stat-total-products').textContent = `總菜品 ${(stats.total_monitored_products || stats.total_products || 0).toLocaleString()} 項`;
+  document.getElementById('stat-total-products').textContent = `歷史累積 ${(stats.total_monitored_products || stats.total_products || 0).toLocaleString()} 項（含已下架）`;
 }
 
 // -----------------------------------------------------------------------------
@@ -872,11 +536,32 @@ function smoothScrollToTab(tabId) {
 // 3. TAB 1: 今日大特價 (-30%+) (每頁 50 筆)
 // -----------------------------------------------------------------------------
 async function fetchDiscounts(page = 1) {
+  const requestId = ++discountsSearchSequence;
   APP_STATE.discountsPage = page;
   const { discountMinPct, discountMinSavings, discountSort, discountCategory, discountSearch } = APP_STATE.filters;
 
   let items = [];
   let fetchedRemote = false;
+
+  if (APP_STATE.fastMode) {
+    try {
+      const client = await getPackedTursoClient();
+      const response = await client.searchProductsPage({
+        kind:'discounts',page,keyword:discountSearch.trim(),category:discountCategory,
+        minDiscount:discountMinPct,minSavings:discountMinSavings,sort:discountSort,
+        location:APP_STATE.locationFilter
+      });
+      if (requestId !== discountsSearchSequence) return;
+      APP_STATE.discounts = response.rows;
+      APP_STATE.discountsTotal = response.total;
+      APP_STATE.discountsHasNext=response.hasNext;
+      renderDiscounts();
+      return true;
+    } catch(err) {
+      if (requestId !== discountsSearchSequence) return;
+      return showDatabaseUnavailable(err,'discounts-grid');
+    }
+  }
 
   // 若輸入關鍵字且啟用了 Turso，直接使用倒排索引向 Turso 全庫檢索（無筆數截斷）
   if (window.UBER_RADAR_CONFIG?.ENABLE_TURSO) {
@@ -893,25 +578,22 @@ async function fetchDiscounts(page = 1) {
         fetchedRemote = true;
       }
     } catch (err) {
-      console.warn('Turso 即時大特價搜尋異常，降級使用本地快照:', err);
+      if (requestId !== discountsSearchSequence) return;
+      return showDatabaseUnavailable(err, 'discounts-grid');
     }
   }
 
+  if (requestId !== discountsSearchSequence) return;
   if (!fetchedRemote) {
     items = applyLocationFilter(APP_STATE.rawDiscounts && APP_STATE.rawDiscounts.length > 0 ? APP_STATE.rawDiscounts : (APP_STATE.discounts || []));
   }
 
   items = items.filter(item => {
-    if (!item.current_price || item.current_price <= 0) return false;
+    if (!item.current_price || item.current_price <= 0 || !isVerifiedPriceDeal(item)) return false;
     if (item.discount_pct < discountMinPct) return false;
     if (item.savings_amount < discountMinSavings) return false;
     if (discountCategory !== '全部' && !item.category_name?.includes(discountCategory)) return false;
-    if (discountSearch) {
-      const kw = discountSearch.toLowerCase();
-      if (!item.product_name?.toLowerCase().includes(kw) && !item.store_name?.toLowerCase().includes(kw)) {
-        return false;
-      }
-    }
+    if (!matchesProductKeyword(item, discountSearch)) return false;
     return true;
   });
 
@@ -929,6 +611,7 @@ async function fetchDiscounts(page = 1) {
   renderDiscounts();
 }
 
+
 function changeDiscountsPage(page) {
   fetchDiscounts(page);
   smoothScrollToTab('tab-discounts');
@@ -938,14 +621,16 @@ function renderDiscounts() {
   const container = document.getElementById('discounts-grid');
   const emptyView = document.getElementById('discounts-empty');
   const items = APP_STATE.discounts || [];
-  const total = items.length;
   const page = APP_STATE.discountsPage || 1;
-  const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
+  const unknownTotal = APP_STATE.fastMode && APP_STATE.discountsTotal == null;
+  const total = APP_STATE.fastMode ? (APP_STATE.discountsTotal ?? items.length) : items.length;
+  const totalPages = unknownTotal ? page+(APP_STATE.discountsHasNext?1:0) : (Math.ceil(total / PAGE_SIZE) || 1);
 
   const statMaxSavingsEl = document.getElementById('stat-max-savings');
   if (statMaxSavingsEl && items.length > 0) {
-    const maxSavings = Math.max(...items.map(i => i.savings_amount || 0));
-    statMaxSavingsEl.textContent = `現省最高 $${Math.round(maxSavings)}`;
+    // Keep the headline statistic tied to the dashboard's unfiltered default query.
+    const maxSavings = Number(APP_STATE.stats?.max_savings_twd || 0);
+    statMaxSavingsEl.textContent = maxSavings > 0 ? `現省最高 ${Math.round(maxSavings)}` : '尚無同批次統計';
   }
 
   if (total === 0) {
@@ -964,82 +649,77 @@ function renderDiscounts() {
 
   emptyView.classList.add('hidden');
   const offset = (page - 1) * PAGE_SIZE;
-  const pageItems = items.slice(offset, offset + PAGE_SIZE);
+  const pageItems = APP_STATE.fastMode ? items : items.slice(offset, offset + PAGE_SIZE);
 
   container.innerHTML = pageItems.map(item => {
     const orderUrl = item.order_action_url || '#';
     const hasPromo = item.promo_type && item.promo_type !== '無';
-    const ratingBadge = item.rating_value 
-      ? `<span class="inline-flex items-center gap-1 text-xs text-amber-500 font-medium"><i data-lucide="star" class="w-3.5 h-3.5 fill-amber-400"></i>${item.rating_value} (${item.review_count || 0})</span>` 
-      : '';
+    const ratingBadge = item.rating_value
+      ? `<span class="shrink-0 inline-flex items-center gap-1.5 rounded-full bg-amber-50 dark:bg-amber-950/50 px-2.5 py-1.5 text-xs font-bold text-amber-700 dark:text-amber-300 whitespace-nowrap" title="店家評分">
+          <i data-lucide="star" class="w-3.5 h-3.5 fill-amber-400 text-amber-400"></i>
+          ${escapeHtml(String(item.rating_value))} (${escapeHtml(String(item.review_count || 0))})
+        </span>` : '';
 
     return `
-      <div class="radar-card bg-white dark:bg-slate-900 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between relative overflow-hidden group">
+      <article class="radar-card group flex h-full flex-col justify-between rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-5 sm:p-6 shadow-sm overflow-hidden">
         <div>
-          <div class="flex items-start justify-between gap-2 mb-2">
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <span class="inline-block text-xs font-semibold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 truncate max-w-full">
-                  ${escapeHtml(item.category_name || '餐飲主食')}
-                </span>
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex min-w-0 flex-1 items-start gap-3">
+              <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300">
+                <i data-lucide="store" class="h-5 w-5"></i>
+              </span>
+              <div class="min-w-0 flex-1">
                 ${distanceBadge(item)}
+                <h3 class="text-lg sm:text-xl font-extrabold leading-snug tracking-tight text-slate-900 dark:text-white break-words [overflow-wrap:anywhere]" title="${escapeHtml(item.store_name)}">
+                  ${escapeHtml(item.store_name)}
+                </h3>
               </div>
-              <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 truncate mt-1 flex items-center gap-1.5" title="${escapeHtml(item.store_name)}">
-                <i data-lucide="store" class="w-3.5 h-3.5 text-slate-400 shrink-0"></i>
-                ${escapeHtml(item.store_name)}
-              </h3>
             </div>
             ${ratingBadge}
           </div>
 
-          <h4 class="text-base font-bold text-slate-900 dark:text-white line-clamp-2 mt-1 mb-2 group-hover:text-red-600 dark:group-hover:text-red-400 transition-colors" title="${escapeHtml(item.product_name)}">
+          <h4 class="mt-4 text-xl font-bold leading-snug text-slate-900 dark:text-slate-50 line-clamp-2 group-hover:text-emerald-700 dark:group-hover:text-emerald-300 transition-colors" title="${escapeHtml(item.product_name)}">
             ${escapeHtml(item.product_name)}
           </h4>
-
-          ${item.description ? `<p class="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-3">${escapeHtml(item.description)}</p>` : ''}
+          ${item.description ? `<p class="mt-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400 line-clamp-2">${escapeHtml(item.description)}</p>` : ''}
         </div>
 
-        <div class="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
-          <div class="flex items-baseline justify-between">
-            <div>
-              <div class="text-xs text-slate-400 line-through">原價 $${Math.round(item.original_price)}</div>
-              <div class="text-2xl font-black text-red-600 dark:text-red-400 font-mono flex items-baseline gap-1">
-                $${Math.round(item.current_price)}
-                <span class="text-xs font-normal text-slate-500 dark:text-slate-400">/ 實質單件</span>
-              </div>
-            </div>
-
-            <div class="text-right">
-              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold text-white badge-discount shadow-sm shadow-red-500/30">
-                <i data-lucide="trending-down" class="w-3.5 h-3.5"></i>
-                -${item.discount_pct}%
-              </span>
-              <div class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 mt-1">
-                現省 $${Math.round(item.savings_amount)}
-              </div>
+        <div class="mt-5 space-y-3 border-t border-slate-100 dark:border-slate-800 pt-4">
+          <div class="rounded-2xl bg-rose-50 dark:bg-rose-950/30 px-4 py-4" title="以近 7 天最高實質單價比較">
+            <div class="mb-2 text-sm font-bold text-slate-700 dark:text-slate-200">實質單價</div>
+            <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-2">
+              <span class="text-base font-semibold text-slate-400 dark:text-slate-500 line-through whitespace-nowrap">${window.UBER_DATA_CONTRACT.unitMoney(item.original_price)}</span>
+              <span class="text-base font-semibold text-slate-400 dark:text-slate-500">→</span>
+              <strong class="text-3xl sm:text-4xl font-black tracking-tight text-red-600 dark:text-red-400 whitespace-nowrap">${window.UBER_DATA_CONTRACT.unitMoney(item.current_price)}</strong>
+              <span class="inline-flex shrink-0 items-center rounded-full bg-red-600 px-3 py-1.5 text-sm font-black text-white whitespace-nowrap">↓${Number(item.discount_pct).toLocaleString('zh-TW', {maximumFractionDigits: 1})}%</span>
             </div>
           </div>
 
-          ${hasPromo ? `
-            <div class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-medium bg-purple-50 text-purple-700 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
-              <i data-lucide="gift" class="w-3 h-3"></i>
-              ${escapeHtml(item.promo_type)}
-            </div>
-          ` : ''}
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 dark:bg-emerald-950/50 px-3 py-1.5 text-sm font-bold text-emerald-700 dark:text-emerald-300">
+              <i data-lucide="tag" class="h-3.5 w-3.5"></i>
+              每件省 ${window.UBER_DATA_CONTRACT.unitMoney(item.savings_amount)}
+            </span>
+            ${hasPromo ? `
+              <span class="inline-flex items-center gap-1.5 rounded-full border border-purple-100 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/50 px-3 py-1.5 text-sm font-bold text-purple-700 dark:text-purple-300">
+                <i data-lucide="gift" class="h-3.5 w-3.5"></i>
+                ${escapeHtml(item.promo_type)}
+              </span>
+            ` : ''}
+          </div>
 
-          <div class="grid grid-cols-2 gap-2 pt-1">
-            <button data-action="history" data-args="${escapeHtml(JSON.stringify([item.store_uuid || item.store_id || '', item.product_uuid || item.product_id, item.product_name, item.store_name, orderUrl]))}" class="px-3 py-2 text-xs font-medium rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center justify-center gap-1.5">
-              <i data-lucide="line-chart" class="w-3.5 h-3.5"></i>
+          <div class="grid grid-cols-2 gap-2.5 pt-2">
+            <button type="button" data-action="history" data-args="${escapeHtml(JSON.stringify([item.store_uuid || item.store_id || '', item.product_uuid || item.product_id, item.product_name, item.store_name, orderUrl]))}" class="flex min-w-0 items-center justify-center gap-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 px-3 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+              <i data-lucide="line-chart" class="h-4 w-4 shrink-0"></i>
               價格走勢
             </button>
-
-            <a href="${escapeHtml(safeOrderUrl(orderUrl))}" target="_blank" rel="noopener noreferrer" data-action="order" data-args="${escapeHtml(JSON.stringify([orderUrl, item.product_name, item.store_name]))}" class="px-3 py-2 text-xs font-semibold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-md shadow-emerald-600/20 transition-all flex items-center justify-center gap-1.5 active:scale-95">
-              <span>前往下單</span>
-              <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+            <a href="${escapeHtml(safeOrderUrl(orderUrl))}" target="_blank" rel="noopener noreferrer" data-action="order" data-args="${escapeHtml(JSON.stringify([orderUrl, item.product_name, item.store_name]))}" class="flex min-w-0 items-center justify-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 px-3 py-3 text-sm font-bold text-white shadow-md shadow-emerald-600/15 transition-all active:scale-95">
+              前往下單
+              <i data-lucide="external-link" class="h-4 w-4 shrink-0"></i>
             </a>
           </div>
         </div>
-      </div>
+      </article>
     `;
   }).join('');
 
@@ -1047,7 +727,8 @@ function renderDiscounts() {
     containerId: 'discounts-pagination',
     currentPage: page,
     totalPages: totalPages,
-    totalItems: total,
+    totalItems: unknownTotal ? null : total,
+    hasNextPage: APP_STATE.discountsHasNext || false,
     pageSize: PAGE_SIZE,
     onPageChange: 'changeDiscountsPage'
   });
@@ -1059,25 +740,41 @@ function renderDiscounts() {
 // 4. TAB 2: 新進店家速報 (New Stores) (每頁 50 筆)
 // -----------------------------------------------------------------------------
 async function fetchNewStores(page = 1) {
+  const sequence = ++storeSearchSequence;
   APP_STATE.storesPage = page;
   const { storeSearch, storeCity, storeSort } = APP_STATE.filters;
   let items = applyLocationFilter(APP_STATE.newStores || []);
+  if (APP_STATE.fastMode) {
+    try {
+      const client=await getPackedTursoClient();
+      const result=await client.searchStoresPage({page,keyword:storeSearch,city:storeCity,
+        newOnly:APP_STATE.filters.storeScope !== 'all',sort:storeSort,location:APP_STATE.locationFilter});
+      if (sequence !== storeSearchSequence) return;
+      APP_STATE.filteredStores=result.rows;
+      APP_STATE.storesTotal=result.total;
+      APP_STATE.storesHasNext=result.hasNext;
+      renderNewStores();
+      return true;
+    } catch(err) {if(sequence===storeSearchSequence)return showDatabaseUnavailable(err,'new-stores-grid');return;}
+  }
 
   if (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.ENABLE_TURSO) {
     try {
       const client = await getPackedTursoClient();
       const stores = await client.searchStores({
         keyword: storeSearch,
-        newOnly: true,
+        newOnly: APP_STATE.filters.storeScope !== 'all',
         location: APP_STATE.locationFilter,
         limit: 50000
       });
       items = stores || [];
     } catch (e) {
-      console.warn('Turso store search error:', e);
+      if (sequence !== storeSearchSequence) return;
+      return showDatabaseUnavailable(e, 'new-stores-grid');
     }
   }
 
+  if (sequence !== storeSearchSequence) return;
   // 地區篩選
   if (storeCity && storeCity !== '全部') {
     items = items.filter(s => matchCityInMemory(s, storeCity));
@@ -1117,13 +814,14 @@ function renderNewStores() {
   const container = document.getElementById('new-stores-grid');
   const emptyView = document.getElementById('new-stores-empty');
   const items = APP_STATE.filteredStores || [];
-  const total = items.length;
   const page = APP_STATE.storesPage || 1;
-  const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
+  const unknownTotal = APP_STATE.fastMode && APP_STATE.storesTotal == null;
+  const total = APP_STATE.fastMode ? (APP_STATE.storesTotal ?? items.length) : items.length;
+  const totalPages = unknownTotal ? page+(APP_STATE.storesHasNext?1:0) : (Math.ceil(total / PAGE_SIZE) || 1);
 
   const counterEl = document.getElementById('new-stores-counter');
   if (counterEl) {
-    counterEl.textContent = `${total.toLocaleString()} 間店家`;
+    counterEl.textContent = unknownTotal ? `至少 ${((page-1)*PAGE_SIZE+items.length).toLocaleString()} 間店家` : `${total.toLocaleString()} 間店家`;
   }
 
   if (total === 0) {
@@ -1150,7 +848,7 @@ function renderNewStores() {
 
   emptyView.classList.add('hidden');
   const offset = (page - 1) * PAGE_SIZE;
-  const pageItems = items.slice(offset, offset + PAGE_SIZE);
+  const pageItems = APP_STATE.fastMode ? items : items.slice(offset, offset + PAGE_SIZE);
 
   container.innerHTML = pageItems.map(store => {
     const ratingHtml = store.rating_value 
@@ -1162,7 +860,7 @@ function renderNewStores() {
         <div>
           <div class="flex items-start justify-between gap-2 mb-2">
             <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold text-white bg-emerald-600">
-              <i data-lucide="sparkles" class="w-3 h-3"></i>全新首度進駐
+              <i data-lucide="sparkles" class="w-3 h-3"></i>${APP_STATE.filters.storeScope === 'all' ? '目前可查詢' : '全新首度進駐'}
             </span>
             ${ratingHtml}
           </div>
@@ -1186,7 +884,7 @@ function renderNewStores() {
 
         <div class="pt-4 mt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
           <span class="text-xs font-medium text-slate-600 dark:text-slate-300">
-            菜單共 <strong>${store.total_menu_items || 0}</strong> 道菜品
+            ${store.total_menu_items == null ? '菜單品項待查詢' : `菜單共 <strong>${store.total_menu_items}</strong> 道菜品`}
           </span>
 
           <a href="${escapeHtml(safeOrderUrl(store.order_action_url || store.store_url || '#'))}" target="_blank" rel="noopener noreferrer" data-action="order" data-args="${escapeHtml(JSON.stringify([store.order_action_url || store.store_url || '', '', store.store_name]))}" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300 dark:hover:bg-emerald-900 transition-colors">
@@ -1202,7 +900,8 @@ function renderNewStores() {
     containerId: 'new-stores-pagination',
     currentPage: page,
     totalPages: totalPages,
-    totalItems: total,
+    totalItems: unknownTotal ? null : total,
+    hasNextPage: APP_STATE.storesHasNext || false,
     pageSize: PAGE_SIZE,
     onPageChange: 'changeStoresPage'
   });
@@ -1214,10 +913,23 @@ function renderNewStores() {
 // 5. TAB 3: 老店新菜推薦 (Tab 3) (每頁 50 筆)
 // -----------------------------------------------------------------------------
 async function fetchNewProducts(page = 1) {
+  const requestId = ++newProductsSearchSequence;
   APP_STATE.productsPage = page;
   const { productSearch } = APP_STATE.filters;
   let items = [];
   let fetchedRemote = false;
+  if (APP_STATE.fastMode) {
+    try {
+      const client=await getPackedTursoClient();
+      const result=await client.searchProductsPage({kind:'newProducts',page,keyword:productSearch.trim(),location:APP_STATE.locationFilter});
+      if (requestId !== newProductsSearchSequence) return;
+      APP_STATE.filteredProducts=result.rows;
+      APP_STATE.productsTotal=result.total;
+      APP_STATE.productsHasNext=result.hasNext;
+      renderNewProducts();
+      return true;
+    } catch(err) {if(requestId===newProductsSearchSequence)return showDatabaseUnavailable(err,'new-products-grid');return;}
+  }
 
   if (window.UBER_RADAR_CONFIG?.ENABLE_TURSO) {
     try {
@@ -1233,21 +945,17 @@ async function fetchNewProducts(page = 1) {
         fetchedRemote = true;
       }
     } catch (err) {
-      console.warn('Turso 新品搜尋異常，降級使用本地快照:', err);
+      if (requestId !== newProductsSearchSequence) return;
+      return showDatabaseUnavailable(err, 'new-products-grid');
     }
   }
 
+  if (requestId !== newProductsSearchSequence) return;
   if (!fetchedRemote) {
     items = applyLocationFilter(APP_STATE.newProducts || []);
   }
 
-  if (productSearch) {
-    const kw = productSearch.toLowerCase();
-    items = items.filter(p => 
-      (p.product_name && p.product_name.toLowerCase().includes(kw)) ||
-      (p.store_name && p.store_name.toLowerCase().includes(kw))
-    );
-  }
+  if (productSearch) items = items.filter(p => matchesProductKeyword(p, productSearch));
 
   APP_STATE.filteredProducts = items;
   renderNewProducts();
@@ -1262,13 +970,14 @@ function renderNewProducts() {
   const container = document.getElementById('new-products-grid');
   const emptyView = document.getElementById('new-products-empty');
   const items = APP_STATE.filteredProducts || [];
-  const total = items.length;
   const page = APP_STATE.productsPage || 1;
-  const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
+  const unknownTotal = APP_STATE.fastMode && APP_STATE.productsTotal == null;
+  const total = APP_STATE.fastMode ? (APP_STATE.productsTotal ?? items.length) : items.length;
+  const totalPages = unknownTotal ? page+(APP_STATE.productsHasNext?1:0) : (Math.ceil(total / PAGE_SIZE) || 1);
 
   const counterEl = document.getElementById('new-products-counter');
   if (counterEl) {
-    counterEl.textContent = `${total.toLocaleString()} 道新品`;
+    counterEl.textContent = unknownTotal ? `至少 ${((page-1)*PAGE_SIZE+items.length).toLocaleString()} 道新品` : `${total.toLocaleString()} 道新品`;
   }
 
   if (total === 0) {
@@ -1287,13 +996,13 @@ function renderNewProducts() {
 
   emptyView.classList.add('hidden');
   const offset = (page - 1) * PAGE_SIZE;
-  const pageItems = items.slice(offset, offset + PAGE_SIZE);
+  const pageItems = APP_STATE.fastMode ? items : items.slice(offset, offset + PAGE_SIZE);
 
   container.innerHTML = pageItems.map(prod => {
     const promoInfo = productPromo(prod);
     const hasPromo = promoInfo.isPromo;
     const hasQtyPromo = promoInfo.totalQty > 1;
-    const unitPrice = promoInfo.effPrice;
+    const unitPrice = promoInfo.displayPrice;
     const displayUnitPrice = Math.round(unitPrice);
     const discountLabel = promoInfo.discountText ? `折合 ${promoInfo.discountText}` : '';
 
@@ -1302,9 +1011,6 @@ function renderNewProducts() {
         <div>
           <div class="flex items-center justify-between gap-2 mb-2">
             <div class="flex items-center gap-1.5 flex-wrap">
-              <span class="inline-block text-xs font-semibold px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300">
-                ${escapeHtml(prod.category_name || '新上架')}
-              </span>
               ${hasPromo ? `
                 <span class="inline-flex items-center gap-0.5 text-[11px] font-bold px-1.5 py-0.5 rounded-md bg-purple-50 text-purple-700 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
                   <i data-lucide="gift" class="w-3 h-3"></i>${escapeHtml(prod.promo_type)}
@@ -1353,7 +1059,8 @@ function renderNewProducts() {
     containerId: 'new-products-pagination',
     currentPage: page,
     totalPages: totalPages,
-    totalItems: total,
+    totalItems: unknownTotal ? null : total,
+    hasNextPage: APP_STATE.productsHasNext || false,
     pageSize: PAGE_SIZE,
     onPageChange: 'changeProductsPage'
   });
@@ -1375,132 +1082,77 @@ function formatTaiwanDiscount(ratio) {
 
 function productPromo(row) {
   const p = window.UBER_DATA_CONTRACT.product(row);
-  const promo = calculateEffectivePromo(p.price, p.promo_type, p.quantity);
-  if (!p.valid_price) return {...promo, effPrice: null, isPromo: false, totalQty: 1, discountText: ''};
-  if (p.effective_price !== null) promo.effPrice = p.effective_price;
-  return promo;
-}
-
-function calculateEffectivePromo(price, promoType, quantity) {
-  const p = Number(price);
-  if (!Number.isFinite(p) || p <= 0) return {effPrice: null, totalQty: 1, isPromo: false, discountText: '', rawPrice: null};
-  const qty = Number(quantity) || 1;
-  const type = String(promoType || '').trim();
-
-  // 1. 匹配「買X送Y」中文或數字
-  const mBuy = type.match(/買\s*([0-9一二兩三四五])\s*送\s*([0-9一二兩三四五])/);
-  if (mBuy) {
-    const digitMap = { '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '一': 1, '二': 2, '兩': 2, '三': 3, '四': 4, '五': 5 };
-    const b = digitMap[mBuy[1]] || 1;
-    const f = digitMap[mBuy[2]] || 1;
-    const totalQty = b + f;
-    const totalCost = p * b;
-    const eff = totalQty > 0 ? (totalCost / totalQty) : p;
-    const ratio = totalQty > 0 ? (b / totalQty) : 1;
-    return {
-      effPrice: eff,
-      totalQty: totalQty,
-      buyQty: b,
-      freeQty: f,
-      ratio: ratio,
-      discountText: formatTaiwanDiscount(ratio),
-      rawPrice: p,
-      isPromo: true
-    };
-  }
-
-  // 2. 匹配「第2件半價」/「第2杯半價」
-  if (/第\s*[2二兩]\s*[件杯項份]\s*半價/.test(type)) {
-    const eff = (p * 1.5) / 2;
-    const ratio = 0.75;
-    return {
-      effPrice: eff,
-      totalQty: 2,
-      buyQty: 2,
-      freeQty: 0,
-      ratio: ratio,
-      discountText: '75折',
-      rawPrice: p,
-      isPromo: true
-    };
-  }
-
-  // 3. 匹配「加1元多1件」
-  if (/加\s*[1一]\s*元多\s*[1一]\s*件/.test(type)) {
-    const eff = (p + 1) / 2;
-    const ratio = p > 0 ? (eff / p) : 0.5;
-    return {
-      effPrice: eff,
-      totalQty: 2,
-      buyQty: 1,
-      freeQty: 1,
-      ratio: ratio,
-      discountText: formatTaiwanDiscount(ratio),
-      rawPrice: p,
-      isPromo: true
-    };
-  }
-
-  // 4. 匹配「N折」/「N折特惠」
-  const mDisc = type.match(/([1-9](?:\.[1-9])?)\s*折/);
-  if (mDisc) {
-    const discNum = parseFloat(mDisc[1]);
-    const ratio = discNum < 10 ? (discNum / 10) : (discNum / 100);
-    return {
-      effPrice: p,
-      totalQty: qty,
-      buyQty: qty,
-      freeQty: 0,
-      ratio: ratio,
-      discountText: `${discNum}折`,
-      rawPrice: p,
-      isPromo: true
-    };
-  }
-
-  // 5. 若 quantity > 1 (組合多入包裝)
-  if (qty > 1) {
-    const eff = p / qty;
-    const ratio = 1 / qty;
-    return {
-      effPrice: eff,
-      totalQty: qty,
-      buyQty: qty,
-      freeQty: 0,
-      ratio: ratio,
-      discountText: formatTaiwanDiscount(ratio),
-      rawPrice: p,
-      isPromo: true
-    };
-  }
-
+  const verified = p.price_evidence_status === 'VERIFIED_MENU';
+  const discount = verified ? Number(p.verified_discount_pct || 0) : 0;
+  const eff = verified && Number(p.effective_price) > 0 ? Number(p.effective_price) : null;
   return {
-    effPrice: p,
-    totalQty: 1,
-    buyQty: 1,
-    freeQty: 0,
-    ratio: 1,
-    discountText: '',
-    rawPrice: p,
-    isPromo: (type !== '無' && type !== '')
+    effPrice: eff,
+    // Listings always show an observed menu price when available; verification is only for promotions.
+    displayPrice: eff ?? p.price,
+    totalQty: verified ? Number(p.quantity || 1) : 1,
+    buyQty: null, freeQty: null,
+    isPromo: verified && discount > 0,
+    discountText: discount > 0 ? `折扣率 ${discount.toFixed(2)}%` : '',
+    rawPrice: p.price,
   };
 }
 
 // -----------------------------------------------------------------------------
+function isPlatformPromotion(p) {
+  return p.price_evidence_status === 'VERIFIED_MENU'
+    && Number(p.verified_discount_pct) > 0
+    && (/^買[0-9]+送[0-9]+$/.test(String(p.promo_type || ''))
+      || p.promo_type === '直接折價');
+}
+function isVerifiedPriceDeal(p) {
+  return p.price_evidence_status === 'VERIFIED_MENU'
+    && (p.is_price_drop === true || p.is_price_drop === 1);
+}
+function isAnyPromotion(p) { return isPlatformPromotion(p) || isVerifiedPriceDeal(p); }
+function displayUnitPrice(p) {
+  return p.price_evidence_status === 'VERIFIED_MENU'
+    ? Number(p.effective_price || p.eff_price || 0) : 0;
+}
+function productIdentity(p) { return `${p.store_uuid || p.store_id}\u001f${p.product_uuid || p.product_id}`; }
+function matchesProductKeyword(item, query) {
+  const haystack = [item.product_name, item.store_name, item.category_name]
+    .map(value => String(value || '').normalize('NFKC').toLocaleLowerCase()).join(' ');
+  return String(query || '').trim().normalize('NFKC').toLocaleLowerCase()
+    .split(/\s+/).filter(Boolean).every(token => haystack.includes(token));
+}
+
 // 6. TAB 4: 折扣活動專區 (Promotions) (每頁 50 筆)
 // -----------------------------------------------------------------------------
 async function fetchPromotions(page = 1) {
+  const requestId = ++promotionsRequestSequence;
+  const counter = document.getElementById('promos-counter');
+  if (counter) { counter.textContent = '載入中...'; counter.dataset.filterReady = 'false'; }
   APP_STATE.promosPage = page;
   const { promoSearch, promoType, promoSort } = APP_STATE.filters;
   let items = [];
   let fetchedRemote = false;
+  if (APP_STATE.fastMode) {
+    try {
+      const client=await getPackedTursoClient();
+      const result=await client.searchProductsPage({kind:'promos',page,keyword:promoSearch.trim(),promoType,sort:promoSort,location:APP_STATE.locationFilter});
+      if (requestId !== promotionsRequestSequence) return;
+      APP_STATE.filteredPromotions=result.rows;
+      APP_STATE.promosTotal=result.total;
+      APP_STATE.promosHasNext=result.hasNext;
+      renderPromotions();
+      if(counter){counter.dataset.filterReady='true';counter.dataset.filterType=promoType||'全部';}
+      return true;
+    } catch(err) {if(requestId===promotionsRequestSequence)return showDatabaseUnavailable(err,'promos-grid');return;}
+  }
 
   if (window.UBER_RADAR_CONFIG?.ENABLE_TURSO) {
     try {
       const client = await getPackedTursoClient();
       const remote = await client.searchPacked({
         keyword: promoSearch.trim(),
-        promo: true,
+        // The verified price-drop view must use the same discount index as the home card.
+        promo: promoType !== '實質降價30',
+        minDiscount: promoType === '實質降價30' ? 30 : null,
         location: APP_STATE.locationFilter,
         limit: 50000
       });
@@ -1509,54 +1161,57 @@ async function fetchPromotions(page = 1) {
         fetchedRemote = true;
       }
     } catch (err) {
-      console.warn('Turso 促銷活動搜尋異常，降級使用本地快照:', err);
+      if (requestId !== promotionsRequestSequence) return;
+      showDatabaseUnavailable(err, 'promos-grid');
+      if (counter) counter.textContent = '資料庫連線失敗';
+      return false;
     }
   }
 
+  if (requestId !== promotionsRequestSequence) return;
   if (!fetchedRemote) {
     items = applyLocationFilter(APP_STATE.promotions || []);
   }
 
-  items = items.filter(p => p.price > 0 && (p.quantity > 1 || (p.promo_type && p.promo_type !== '無' && p.promo_type !== '')));
+  items = items.filter(p => p.price > 0 && isAnyPromotion(p));
 
   // 活動類型篩選
   if (promoType && promoType !== '全部') {
-    if (promoType === '買一送一') {
-      items = items.filter(p => /買.*送/.test(p.promo_type));
+    if (promoType === '平台優惠') {
+      items = items.filter(isPlatformPromotion);
+    } else if (promoType === '實質降價30') {
+      items = items.filter(p => isVerifiedPriceDeal(p) && Number(p.discount_pct) >= 30);
+    } else if (promoType === '買一送一') {
+      items = items.filter(p => isPlatformPromotion(p) && /^買[0-9]+送[0-9]+$/.test(p.promo_type));
     } else if (promoType === '半價') {
-      items = items.filter(p => /半價/.test(p.promo_type));
+      items = []; // Removed unsupported second-item discount.
     } else if (promoType === '加1元') {
-      items = items.filter(p => /加.*元多.*件/.test(p.promo_type));
+      items = []; // Removed unsupported add-a-dollar offer.
     } else if (promoType === '折') {
-      items = items.filter(p => /折/.test(p.promo_type));
+      items = items.filter(p => isPlatformPromotion(p) && p.promo_type === '直接折價');
     } else if (promoType === '多入') {
-      items = items.filter(p => p.quantity > 1);
+      items = []; // Removed unsupported multi-item package filter.
     }
   }
 
   // 關鍵字搜尋
-  if (promoSearch) {
-    const kw = promoSearch.toLowerCase();
-    items = items.filter(p => 
-      (p.product_name && p.product_name.toLowerCase().includes(kw)) ||
-      (p.store_name && p.store_name.toLowerCase().includes(kw)) ||
-      (p.category_name && p.category_name.toLowerCase().includes(kw))
-    );
-  }
+  if (promoSearch) items = items.filter(p => matchesProductKeyword(p, promoSearch));
 
   // 排序
   if (promoSort === 'price_asc') {
-    items.sort((a, b) => (a.eff_price || a.price || 0) - (b.eff_price || b.price || 0));
+    items.sort((a, b) => displayUnitPrice(a) - displayUnitPrice(b));
   } else if (promoSort === 'price_desc') {
-    items.sort((a, b) => (b.eff_price || b.price || 0) - (a.eff_price || a.price || 0));
+    items.sort((a, b) => displayUnitPrice(b) - displayUnitPrice(a));
   } else if (promoSort === 'rating_desc') {
     items.sort((a, b) => (b.rating_value || 0) - (a.rating_value || 0) || (a.eff_price || 0) - (b.eff_price || 0));
   } else if (promoSort === 'name_asc') {
     items.sort((a, b) => String(a.product_name || '').localeCompare(String(b.product_name || ''), 'zh-TW'));
   }
 
+  if (requestId !== promotionsRequestSequence) return;
   APP_STATE.filteredPromotions = items;
   renderPromotions();
+  if (counter) { counter.dataset.filterReady = 'true'; counter.dataset.filterType = promoType || '全部'; }
 }
 
 function changePromosPage(page) {
@@ -1568,13 +1223,14 @@ function renderPromotions() {
   const container = document.getElementById('promos-grid');
   const emptyView = document.getElementById('promos-empty');
   const items = APP_STATE.filteredPromotions || [];
-  const total = items.length;
   const page = APP_STATE.promosPage || 1;
-  const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
+  const unknownTotal = APP_STATE.fastMode && APP_STATE.promosTotal == null;
+  const total = APP_STATE.fastMode ? (APP_STATE.promosTotal ?? items.length) : items.length;
+  const totalPages = unknownTotal ? page+(APP_STATE.promosHasNext?1:0) : (Math.ceil(total / PAGE_SIZE) || 1);
 
   const counterEl = document.getElementById('promos-counter');
   if (counterEl) {
-    counterEl.textContent = `${total.toLocaleString()} 筆特惠`;
+    counterEl.textContent = unknownTotal ? `至少 ${((page-1)*PAGE_SIZE+items.length).toLocaleString()} 筆特惠` : `${total.toLocaleString()} 筆特惠`;
   }
 
   if (total === 0) {
@@ -1593,12 +1249,13 @@ function renderPromotions() {
 
   emptyView.classList.add('hidden');
   const offset = (page - 1) * PAGE_SIZE;
-  const pageItems = items.slice(offset, offset + PAGE_SIZE);
+  const pageItems = APP_STATE.fastMode ? items : items.slice(offset, offset + PAGE_SIZE);
 
   container.innerHTML = pageItems.map(p => {
     const promoInfo = productPromo(p);
     const eff = promoInfo.effPrice;
-    const discountLabel = promoInfo.discountText ? `折合 ${promoInfo.discountText}` : '';
+    const discountLabel = promoInfo.totalQty > 1 && promoInfo.discountText ? `折合 ${promoInfo.discountText}` : '';
+    const multiUnit = promoInfo.totalQty > 1;
     
     return `
       <div class="radar-card bg-white dark:bg-slate-900 rounded-2xl p-5 border border-purple-100 dark:border-purple-950/60 shadow-sm flex flex-col justify-between group">
@@ -1606,9 +1263,9 @@ function renderPromotions() {
           <div class="flex items-center justify-between gap-2 mb-2">
             <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold text-white badge-promo">
               <i data-lucide="gift" class="w-3 h-3"></i>
-              ${escapeHtml(p.promo_type)}
+              ${escapeHtml(isPlatformPromotion(p) ? (p.promo_type && p.promo_type !== '無' ? p.promo_type : '多件優惠') : `FoodRadar 實質降價 ${Number(p.discount_pct).toFixed(1)}%`)}
             </span>
-            <span class="text-xs text-slate-400 truncate max-w-[120px]">${escapeHtml(p.category_name || '')}</span>
+            ${isVerifiedPriceDeal(p) && isPlatformPromotion(p) ? `<span class="text-[11px] font-bold text-rose-600">另有實質降價 ${Number(p.discount_pct).toFixed(1)}%</span>` : ''}
           </div>
 
           <div class="flex items-center justify-between gap-1 mb-1">
@@ -1619,17 +1276,21 @@ function renderPromotions() {
             ${distanceBadge(p)}
           </div>
 
-          <h4 class="text-base font-bold text-slate-900 dark:text-white group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors line-clamp-2">
-            ${escapeHtml(p.product_name)}
-          </h4>
+          <div class="flex items-center gap-3">
+            <h4 class="text-base font-bold text-slate-900 dark:text-white group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors line-clamp-2">
+              ${escapeHtml(p.product_name)}
+            </h4>
+          </div>
+          ${p.cart_promo_label ? `<p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">另有滿額活動：${escapeHtml(p.cart_promo_label)}（不計入單品折扣）</p>` : ''}
         </div>
 
         <div class="pt-3 mt-3 border-t border-slate-100 dark:border-slate-800">
           <div class="flex items-baseline justify-between mb-3">
             <div>
-              <div class="text-xs text-slate-400">標價 ${window.UBER_DATA_CONTRACT.money(p.price)}${promoInfo.totalQty > 1 ? ` (共 ${promoInfo.totalQty} 份)` : (p.quantity > 1 ? ` (共 ${p.quantity} 份)` : '')}</div>
+              <div class="text-xs text-slate-400">平台售價 ${window.UBER_DATA_CONTRACT.money(p.price)}${multiUnit ? `（活動共 ${promoInfo.totalQty} 件）` : ''}</div>
+              ${p.display_original_price > p.price ? `<div class="text-xs text-slate-500">平台刪除線參考價 <s>${window.UBER_DATA_CONTRACT.money(p.display_original_price)}</s>（非七日歷史價）</div>` : ''}
               <div class="text-xl font-black text-purple-600 dark:text-purple-400 font-mono">
-                實質單價 $${Math.round(eff)}
+                ${multiUnit ? '平均單件成本' : '優惠售價'} ${window.UBER_DATA_CONTRACT.money(multiUnit ? eff : p.price)}
               </div>
             </div>
             ${discountLabel ? `
@@ -1652,7 +1313,8 @@ function renderPromotions() {
     containerId: 'promos-pagination',
     currentPage: page,
     totalPages: totalPages,
-    totalItems: total,
+    totalItems: unknownTotal ? null : total,
+    hasNextPage: APP_STATE.promosHasNext || false,
     pageSize: PAGE_SIZE,
     onPageChange: 'changePromosPage'
   });
@@ -1858,22 +1520,22 @@ function executeInMemoryGlobalSearch(page = 1) {
 
   // 4. 促銷活動過濾
   if (sortMode === 'promo_only') {
-    items = items.filter(p => Number(p.quantity || 1) > 1 || (p.promo_type && p.promo_type !== '無' && p.promo_type !== ''));
+    items = items.filter(isAnyPromotion);
   }
 
   // 5. 排序演算法
   if (sortMode === 'price_asc') {
-    items.sort((a, b) => (Number(a.eff_price || a.price) || 0) - (Number(b.eff_price || b.price) || 0) || (b.rating_value || 0) - (a.rating_value || 0));
+    items.sort((a, b) => displayUnitPrice(a) - displayUnitPrice(b) || (b.rating_value || 0) - (a.rating_value || 0));
   } else if (sortMode === 'price_desc') {
-    items.sort((a, b) => (Number(b.eff_price || b.price) || 0) - (Number(a.eff_price || a.price) || 0) || (b.rating_value || 0) - (a.rating_value || 0));
+    items.sort((a, b) => displayUnitPrice(b) - displayUnitPrice(a) || (b.rating_value || 0) - (a.rating_value || 0));
   } else if (sortMode === 'name_asc') {
     items.sort((a, b) => String(a.product_name || '').localeCompare(String(b.product_name || '')));
   } else if (sortMode === 'promo_first') {
     items.sort((a, b) => {
-      const aPromo = (a.promo_type && a.promo_type !== '無' && a.promo_type !== '') ? 0 : 1;
-      const bPromo = (b.promo_type && b.promo_type !== '無' && b.promo_type !== '') ? 0 : 1;
+      const aPromo = isAnyPromotion(a) ? 0 : 1;
+      const bPromo = isAnyPromotion(b) ? 0 : 1;
       if (aPromo !== bPromo) return aPromo - bPromo;
-      return (b.rating_value || 0) - (a.rating_value || 0) || (Number(a.eff_price || a.price) || 0) - (Number(b.eff_price || b.price) || 0);
+      return (b.rating_value || 0) - (a.rating_value || 0) || displayUnitPrice(a) - displayUnitPrice(b);
     });
   } else {
     // 預設: 店家評分最高優先 (rating_desc)；若啟用定位篩選，評分相同時距離近者優先
@@ -1881,10 +1543,10 @@ function executeInMemoryGlobalSearch(page = 1) {
       items.sort((a, b) => 
         (b.rating_value || 0) - (a.rating_value || 0) ||
         (Number(a.distance_km || 9999) - Number(b.distance_km || 9999)) ||
-        (Number(a.eff_price || a.price) || 0) - (Number(b.eff_price || b.price) || 0)
+        displayUnitPrice(a) - displayUnitPrice(b)
       );
     } else {
-      items.sort((a, b) => (b.rating_value || 0) - (a.rating_value || 0) || (Number(a.eff_price || a.price) || 0) - (Number(b.eff_price || b.price) || 0));
+      items.sort((a, b) => (b.rating_value || 0) - (a.rating_value || 0) || displayUnitPrice(a) - displayUnitPrice(b));
     }
   }
 
@@ -1914,11 +1576,40 @@ async function fetchGlobalProducts(page = 1) {
   const geo = buildLocationSql('s');
   const limit = PAGE_SIZE;
   const offset = (page - 1) * limit;
+  if (APP_STATE.fastMode) {
+    try {
+      const client=await getPackedTursoClient();
+      renderGlobalLoadingState(rawSearch || cityFilter);
+      const updateExactCount=total=>{
+        if(sequence!==globalSearchSequence || APP_STATE.globalPage!==page)return;
+        APP_STATE.globalTotalItems=total;
+        APP_STATE.globalTotalPages=Math.max(1,Math.ceil(total/PAGE_SIZE));
+        APP_STATE.globalHasNext=page*PAGE_SIZE<total;
+        renderPaginationComponent({
+          containerId:'global-pagination',currentPage:page,
+          totalPages:APP_STATE.globalTotalPages,totalItems:total,
+          pageSize:PAGE_SIZE,hasNextPage:APP_STATE.globalHasNext,
+          onPageChange:'changeGlobalPage'
+        });
+      };
+      const response=await client.searchProductsPage({kind:'global',page,
+        keyword:rawSearch,city:cityFilter,sort:sortMode,location:APP_STATE.locationFilter,
+        onCount:updateExactCount,shouldCount:()=>sequence===globalSearchSequence});
+      if (sequence!==globalSearchSequence)return;
+      APP_STATE.globalProducts=response.rows;
+      APP_STATE.globalTotalItems=response.total;
+      APP_STATE.globalTotalPages=response.total===null ? page+(response.hasNext ? 1 : 0) : Math.max(1,Math.ceil(response.total/PAGE_SIZE));
+      APP_STATE.globalHasNext=response.hasNext ?? (page*PAGE_SIZE<response.total);
+      APP_STATE.globalResultLimit=null;
+      renderGlobalProducts();
+      return true;
+    }catch(err){if(sequence===globalSearchSequence)return showDatabaseUnavailable(err,'global-products-grid');return;}
+  }
 
   // 無篩選的首屏不需要掃描 250 萬筆 Parquet。這類查詢會佔住唯一的
   // DuckDB connection，令緊接著輸入的關鍵字查詢只能排隊，看起來像搜尋失效。
   // 本地快照已有足夠的預設瀏覽資料；真正有搜尋/縣市條件時才進湖倉。
-  const requiresLakehouseQuery = Boolean(rawSearch) || (cityFilter && cityFilter !== '全部') || APP_STATE.locationFilter.enabled;
+  const requiresLakehouseQuery = window.UBER_RADAR_CONFIG?.ENABLE_TURSO || Boolean(rawSearch) || (cityFilter && cityFilter !== '全部') || APP_STATE.locationFilter.enabled;
   if (!requiresLakehouseQuery) {
     executeInMemoryGlobalSearch(page);
     return;
@@ -1929,48 +1620,30 @@ async function fetchGlobalProducts(page = 1) {
     try {
       const client = await getPackedTursoClient();
       renderGlobalLoadingState(rawSearch || cityFilter);
-      const requestLimit = Math.min(50000, Math.max(200, page * PAGE_SIZE + 1));
+      // Fetch the entire eligible set before sorting or counting. Packed single-point search has no truncation.
+      const requestLimit = 50000;
       const rows = await client.searchPacked({
         keyword: rawSearch,
         city: cityFilter && cityFilter !== '全部' ? cityFilter : '',
-        promo: sortMode === 'promo_only',
+        // Product-wide filter is applied after all product records are loaded to avoid different promotion definitions.
+        promo: false,
         location: APP_STATE.locationFilter,
         limit: requestLimit
       });
       if (sequence === globalSearchSequence) {
-        APP_STATE.globalResultLimit = rows.length >= requestLimit ? requestLimit : null;
+        APP_STATE.globalResultLimit = window.UBER_RADAR_CONFIG?.SINGLE_POINT ? null : (rows.length >= requestLimit ? requestLimit : null);
         APP_STATE.allProducts = rows;
         executeInMemoryGlobalSearch(page);
         return;
       }
     } catch (err) {
-      console.warn('Packed Turso 搜尋失敗，切換後續搜尋引擎:', err);
+      if (sequence !== globalSearchSequence) return;
+      return showDatabaseUnavailable(err, 'global-products-grid');
     }
   }
 
-  // 2. DuckDB WASM 搜尋
-  if (APP_STATE.isDuckDBReady && window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.ENABLE_DUCKDB) {
-    try {
-      const ok = await executeDuckDBGlobalSearch(page, controller.signal);
-      if (!ok || controller.signal.aborted || sequence !== globalSearchSequence) {
-        return;
-      }
-      return;
-    } catch (e) {
-      if (controller.signal.aborted) return;
-      console.warn('DuckDB WASM 查詢失敗，退回記憶體快照比對:', e);
-    }
-  }
-
-  // 3. Fallback: 記憶體快照比對
-  if (sequence === globalSearchSequence) {
-    executeInMemoryGlobalSearch(page);
-  }
-}
-
-function changeGlobalPage(page) {
-  fetchGlobalProducts(page);
-  smoothScrollToTab('tab-global-search');
+  if (sequence !== globalSearchSequence) return;
+  return showDatabaseUnavailable(new Error('Database query unavailable'), 'global-products-grid');
 }
 
 function renderGlobalLoadingState(rawSearch) {
@@ -1993,7 +1666,7 @@ function renderGlobalProducts() {
   const items = APP_STATE.globalProducts;
   const page = APP_STATE.globalPage || 1;
   const totalPages = APP_STATE.globalTotalPages || 1;
-  const totalItems = APP_STATE.globalTotalItems || 0;
+  const totalItems = APP_STATE.globalTotalItems ?? null;
   const hasNextPage = APP_STATE.globalHasNext || false;
 
   if (container) {
@@ -2032,7 +1705,7 @@ function renderGlobalProducts() {
     const promoInfo = productPromo(p);
     const hasPromo = promoInfo.isPromo;
     const hasQtyPromo = promoInfo.totalQty > 1;
-    const unitPrice = promoInfo.effPrice;
+    const unitPrice = promoInfo.displayPrice;
     const displayUnitPrice = Math.round(unitPrice);
     const discountLabel = promoInfo.discountText ? `折合 ${promoInfo.discountText}` : '';
     const ratingHtml = p.rating_value 
@@ -2056,9 +1729,13 @@ function renderGlobalProducts() {
             </div>
           </div>
 
-          <h4 class="text-sm font-bold text-slate-900 dark:text-white line-clamp-2 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors mb-2" title="${escapeHtml(p.product_name)}">
-            ${escapeHtml(p.product_name)}
-          </h4>
+          <div class="flex items-center gap-2 mb-2">
+            <h4 class="text-sm font-bold text-slate-900 dark:text-white line-clamp-2 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors" title="${escapeHtml(p.product_name)}">
+              ${escapeHtml(p.product_name)}
+            </h4>
+          </div>
+          ${p.display_original_price > p.price ? `<p class="text-[11px] text-slate-500 mb-1">平台刪除線參考價 <s>${window.UBER_DATA_CONTRACT.money(p.display_original_price)}</s>（非歷史價）</p>` : ''}
+          ${p.is_sold_out === true ? '<p class="text-[11px] font-medium text-rose-600 mb-1">最近採集時售罄</p>' : p.is_available === false ? '<p class="text-[11px] font-medium text-amber-600 mb-1">最近採集時不可購買</p>' : ''}
 
           <div class="flex items-center gap-1.5 flex-wrap text-xs">
             ${hasPromo ? `
@@ -2071,15 +1748,13 @@ function renderGlobalProducts() {
                 ${escapeHtml(discountLabel)}
               </span>
             ` : ''}
-            <span class="inline-block text-[11px] px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
-              ${escapeHtml(p.category_name || '一般')}
-            </span>
             ${p.city ? `
               <span class="inline-block text-[11px] px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
                 ${escapeHtml(p.city)}
               </span>
             ` : ''}
             ${distanceBadge(p)}
+            ${p.cart_promo_label ? `<span class="text-[11px] text-indigo-600 dark:text-indigo-400">另有滿額活動（不計入單品折扣）</span>` : ''}
             ${hasQtyPromo ? `
               <span class="text-[11px] text-slate-400 dark:text-slate-500 font-mono">
                 (標價 ${window.UBER_DATA_CONTRACT.money(p.price)} 共 ${promoInfo.totalQty} 件)
@@ -2093,7 +1768,7 @@ function renderGlobalProducts() {
             <i data-lucide="line-chart" class="w-3.5 h-3.5"></i>走勢
           </button>
           <a href="${escapeHtml(safeOrderUrl(p.order_action_url || '#'))}" target="_blank" rel="noopener noreferrer" data-action="order" data-args="${escapeHtml(JSON.stringify([String(p.order_action_url || ''), String(p.product_name), String(p.store_name)]))}" class="text-xs text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-1 active:scale-95 transition-transform">
-            下單 <i data-lucide="arrow-up-right" class="w-3.5 h-3.5"></i>
+            ${p.delivery_available === true ? "下單" : "查看菜單"} <i data-lucide="arrow-up-right" class="w-3.5 h-3.5"></i>
           </a>
         </div>
       </div>
@@ -2121,7 +1796,10 @@ function changeGlobalPage(page) {
 // -----------------------------------------------------------------------------
 // 8. 價格走勢圖彈窗 (Price Trend Modal with Chart.js & DuckDB Edge SQL)
 // -----------------------------------------------------------------------------
+let priceHistorySequence = 0;
+
 async function showPriceHistoryModal(storeUuid, productId, productName, storeName, orderUrl) {
+  const sequence = ++priceHistorySequence;
   const modal = document.getElementById('price-history-modal');
   document.getElementById('modal-store-name').textContent = storeName;
   document.getElementById('modal-product-name').textContent = productName;
@@ -2136,69 +1814,70 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   modal.classList.remove('hidden');
   modal.classList.add('flex');
 
-  const historyKey = `${storeUuid}::${productId}`;
-  let history = (APP_STATE.historyMap && APP_STATE.historyMap[historyKey]) ? [...APP_STATE.historyMap[historyKey]] : [];
+  document.getElementById('modal-history-tbody').innerHTML = '<tr><td colspan="4" class="px-3 py-4 text-center">載入價格歷史中...</td></tr>';
+  if (APP_STATE.chartInstance) {
+    APP_STATE.chartInstance.destroy();
+    APP_STATE.chartInstance = null;
+  }
+  let history = [];
+  let currentComparison = null;
+  let currentProductLoaded = false;
 
   // Packed DB: events live inside the selected store bundle.
-  if (window.UBER_RADAR_CONFIG && window.UBER_RADAR_CONFIG.ENABLE_TURSO && (storeUuid || productId)) {
+  if (window.UBER_RADAR_CONFIG && (window.UBER_RADAR_CONFIG.ENABLE_STATIC || window.UBER_RADAR_CONFIG.ENABLE_TURSO) && (storeUuid || productId)) {
     try {
       const client = await getPackedTursoClient();
+      // Load the same store bundle once; concurrent lookups may duplicate cached chunks.
+      const currentProduct = await client.packedCurrentProduct(storeUuid, productId);
       const events = await client.packedHistory(storeUuid, productId);
+      if (currentProduct) {
+        currentProductLoaded = true;
+        currentComparison = currentProduct;
+      }
       if (events.length) {
         history = events
+          .filter(e => {
+            const state = JSON.parse(e.new_state || e.old_state || '{}');
+            return state.price_evidence_status === 'VERIFIED_MENU'
+              && (state.menu_quote_valid === true ||
+                (state.price_valid === true && (state.is_open === 1 || state.is_open === true)));
+          })
           .map(e => {
             const state = JSON.parse(e.new_state || e.old_state || '{}');
-            const p = Number(state.price || 0);
-            const eff = Number(state.effective_price || p);
+            const unitOnly = state.effective_unit_only === true;
+            const p = unitOnly ? null : Number(state.price || 0);
+            const eff = unitOnly ? Number(state.price || 0)
+              : (state.price_evidence_status === 'VERIFIED_MENU'
+                  ? Number(state.effective_price || 0) : null);
             return {
               crawled_time: e.event_time,
               price: p,
               eff_price: eff,
-              quantity: Number(state.quantity || 1),
-              promo_type: state.promo_type || '無'
+              quantity: unitOnly ? null : Number(state.quantity || 1),
+              promo_type: unitOnly ? '歷史未保存' : (state.promo_type || '無'),
+              unit_only: unitOnly
             };
           })
-          .filter(h => h.price > 0 && h.eff_price > 0);
+          .filter(h => Number(h.eff_price) > 0 && (h.unit_only || h.price > 0));
       }
     } catch (err) {
-      console.warn('Packed Turso 歷史記錄查詢失敗:', err);
+      if (sequence !== priceHistorySequence) return;
+      showToast('歷史資料載入失敗', '歷史資料暫時無法載入，請稍後重試。', 'alert-triangle', 5000); modal.classList.add('hidden'); modal.classList.remove('flex'); return;
     }
   }
 
-  if (window.UBER_RADAR_SERVING_API && storeUuid && history.length === 0) {
-    try {
-      const base = String(window.UBER_RADAR_CONFIG.WORKER_API_BASE_URL).replace(/\/$/, '');
-      const response = await fetch(`${base}/product/${encodeURIComponent(storeUuid)}/${encodeURIComponent(productId)}/history?days=60`);
-      if (response.ok) {
-        const payload = await response.json();
-        history = (payload.items || [])
-          .map(event => {
-            const state = JSON.parse(event.new_state || '{}');
-            const p = Number(state.price || 0);
-            const eff = Number(state.effective_price || p);
-            return {
-              crawled_time: event.event_time,
-              price: p,
-              eff_price: eff,
-              quantity: Number(state.quantity || 1),
-              promo_type: state.promo_type || '無'
-            };
-          })
-          .filter(h => h.price > 0 && h.eff_price > 0);
-      }
-    } catch (error) { console.warn('Serving history unavailable', error); }
-  }
-  
-  // 若 history.json 未命中，嘗試從當前已載入之各資料集中尋找該商品的真實即時資訊
-  if (history.length === 0) {
-    const found = (APP_STATE.rawDiscounts || []).find(x => String(x.product_id) === String(productId))
-      || (APP_STATE.promotions || []).find(x => String(x.product_id) === String(productId))
-      || (APP_STATE.newProducts || []).find(x => String(x.product_id) === String(productId))
-      || (APP_STATE.allProducts || []).find(x => String(x.product_id) === String(productId))
-      || (APP_STATE.globalProducts || []).find(x => String(x.product_id) === String(productId));
+  if (sequence !== priceHistorySequence) return;
 
-    if (found && Number(found.price || 0) > 0) {
-      const eff = found.eff_price || (found.quantity > 1 ? Math.round((found.price / found.quantity) * 10) / 10 : found.price);
+  // Current product values also originate from Turso.
+  if (history.length === 0) {
+    const found = [APP_STATE.rawDiscounts, APP_STATE.promotions, APP_STATE.newProducts,
+      APP_STATE.allProducts, APP_STATE.globalProducts].flat().find(x => x
+        && String(x.product_uuid || x.product_id) === String(productId)
+        && String(x.store_uuid || x.store_id || '') === String(storeUuid));
+
+    if (found && found.price_evidence_status === 'VERIFIED_MENU'
+        && (found.is_open === 1 || found.is_open === true) && Number(found.price || 0) > 0) {
+      const eff = Number(found.effective_price || found.eff_price || 0);
       if (Number(eff) > 0) {
         history = [{
           crawled_time: found.crawled_time || (APP_STATE.stats && APP_STATE.stats.latest_batch) || '最新',
@@ -2211,19 +1890,49 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
     }
   }
 
-  // 若歷史紀錄大於 1 筆，按採集時間升冪排序
-  if (history.length > 1) {
-    history.sort((a, b) => String(a.crawled_time).localeCompare(String(b.crawled_time)));
+  // The packed history may precede the currently verified price because
+  // older versions only recorded changes. Always include the latest valid
+  // product observation, even when the price has stayed flat since the
+  // previous event. Future crawls persist every valid observation.
+  if (currentProductLoaded && currentComparison &&
+      currentComparison.is_current_menu_observation === true) {
+    const at = String(currentComparison.crawled_time || '');
+    const price = Number(currentComparison.price);
+    const unit = Number(currentComparison.current_price);
+    if (currentComparison.price_evidence_status === 'VERIFIED_MENU'
+        && at && Number.isFinite(price) && price > 0 && Number.isFinite(unit) && unit > 0) {
+      history.push({
+        crawled_time: at,
+        price,
+        eff_price: unit,
+        quantity: Number(currentComparison.quantity || 1),
+        promo_type: currentComparison.promo_type || '無',
+        unit_only: false
+      });
+    }
   }
+
+  // One product and one crawl timestamp represent one price observation.
+  // Guard both the table and chart even if a future event type slips through.
+  const uniqueHistory = new Map();
+  for (const observation of history) {
+    const timestamp = String(observation.crawled_time || '');
+    const prior = uniqueHistory.get(timestamp);
+    if (!prior || (prior.unit_only && !observation.unit_only)) {
+      uniqueHistory.set(timestamp, observation);
+    }
+  }
+  history = [...uniqueHistory.values()]
+    .sort((a, b) => String(a.crawled_time).localeCompare(String(b.crawled_time)));
 
   const tbody = document.getElementById('modal-history-tbody');
   if (history.length > 0) {
-    const rowsHtml = history.map(h => `
+    const rowsHtml = [...history].reverse().map(h => `
       <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
         <td class="px-3 py-2 font-mono text-slate-600 dark:text-slate-300 text-xs">${formatBatchDate(h.crawled_time)}</td>
-        <td class="px-3 py-2 font-mono font-medium text-xs">$${Math.round(h.price)}</td>
+        <td class="px-3 py-2 font-mono font-medium text-xs">${h.unit_only ? '—' : window.UBER_DATA_CONTRACT.money(h.price)}</td>
         <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-[11px] font-medium ${h.promo_type && h.promo_type !== '無' ? 'bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'}">${escapeHtml(h.promo_type || '無')}</span></td>
-        <td class="px-3 py-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">$${Number(h.eff_price).toFixed(h.eff_price % 1 === 0 ? 0 : 1)}</td>
+        <td class="px-3 py-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 text-xs">${window.UBER_DATA_CONTRACT.unitMoney(h.eff_price)}</td>
       </tr>
     `).join('');
 
@@ -2233,7 +1942,7 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
 
     tbody.innerHTML = rowsHtml + hintHtml;
   } else {
-    tbody.innerHTML = `<tr><td colspan="4" class="px-3 py-4 text-center text-slate-400 text-xs">目前批次為最新快照記錄</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="px-3 py-4 text-center text-slate-400 text-xs">目前沒有可用的價格歷史</td></tr>`;
   }
 
   const ctx = document.getElementById('priceHistoryChart').getContext('2d');
@@ -2245,27 +1954,60 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
   const gridColor = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)';
   const textColor = isDark ? '#94a3b8' : '#64748b';
 
-  const labels = history.length > 0 ? history.map(h => formatBatchDate(h.crawled_time)) : ['當前批次'];
-  const prices = history.length > 0 ? history.map(h => Number(h.eff_price)) : [0];
+  // 保留每次採集資料點，X 軸只顯示精簡日期；同一天兩次採集位於同一日網格區段。
+  const dayKey = value => formatBatchDate(value).slice(0, 10).replaceAll('/', '-');
+  const dayKeys = history.map(h => dayKey(h.crawled_time));
+  const uniqueDays = [...new Set(dayKeys)];
+  const labelInterval = Math.max(1, Math.ceil(uniqueDays.length / 9));
+  const labels = history.map(h => h.crawled_time);
+  // Preserve exact unit cost (e.g. 89 / 2 = 44.50) in chart geometry.
+  // TWD text remains rounded for display, matching Uber Eats.
+  const prices = history.map(h => Number(h.eff_price));
+
+  // 在兩個日期交界的資料點中間畫淡灰色直線，形成每日區隔的網格。
+  const daySeparatorPlugin = {
+    id: 'foodRadarDaySeparators',
+    afterDraw(chart) {
+      if (history.length < 2) return;
+      const { ctx, chartArea, scales } = chart;
+      if (!chartArea || !scales.x) return;
+      ctx.save();
+      ctx.strokeStyle = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(100,116,139,0.18)';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < dayKeys.length; i++) {
+        if (dayKeys[i] === dayKeys[i - 1]) continue;
+        const x = (scales.x.getPixelForValue(i - 1) + scales.x.getPixelForValue(i)) / 2;
+        ctx.beginPath();
+        ctx.moveTo(x, chartArea.top);
+        ctx.lineTo(x, chartArea.bottom);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  };
 
   APP_STATE.chartInstance = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: labels,
+      labels,
       datasets: [{
         label: '實質單價 (TWD)',
         data: prices,
         borderColor: '#10b981',
         backgroundColor: 'rgba(16, 185, 129, 0.12)',
-        fill: true,
-        tension: 0.3,
+        // Show a true point-to-point trend; no misleading plateau-then-vertical-drop.
+        fill: false,
+        stepped: false,
+        tension: 0,
+        borderWidth: 3,
         pointBackgroundColor: '#10b981',
         pointBorderColor: '#ffffff',
         pointBorderWidth: 2,
-        pointRadius: history.length > 1 ? 5 : 6,
+        pointRadius: history.length > 1 ? 4 : 6,
         pointHoverRadius: 7
       }]
     },
+    plugins: [daySeparatorPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -2273,24 +2015,44 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (ctx) => ` 實質單價: $${ctx.parsed.y} TWD`
+            title: items => items.length ? formatBatchDate(history[items[0].dataIndex].crawled_time) : '',
+            label: item => {
+              const h = history[item.dataIndex];
+              return [
+                `實質單價：${window.UBER_DATA_CONTRACT.unitMoney(h.eff_price)} TWD`,
+                `標價：${window.UBER_DATA_CONTRACT.money(h.price)} TWD`,
+                `促銷：${h.promo_type || '無'}`
+              ];
+            }
           }
         }
       },
       scales: {
         x: {
-          grid: { color: gridColor },
-          ticks: { color: textColor, font: { size: 11 } }
+          grid: { display: false },
+          ticks: {
+            color: textColor,
+            font: { size: 11 },
+            maxRotation: 0,
+            minRotation: 0,
+            autoSkip: false,
+            callback: (_, index) => {
+              if (index > 0 && dayKeys[index] === dayKeys[index - 1]) return '';
+              const dayIndex = uniqueDays.indexOf(dayKeys[index]);
+              if (dayIndex % labelInterval !== 0 && dayIndex !== uniqueDays.length - 1) return '';
+              return dayKeys[index] ? dayKeys[index].slice(5).replace('-', '/') : '';
+            }
+          }
         },
         y: {
           grid: { color: gridColor },
-          ticks: { 
-            color: textColor, 
+          ticks: {
+            color: textColor,
             font: { size: 11 },
-            callback: (v) => `$${v}`
+            callback: v => window.UBER_DATA_CONTRACT.money(v)
           },
-          suggestedMin: Math.max(0, Math.min(...prices) * 0.85),
-          suggestedMax: Math.max(...prices) * 1.15
+          suggestedMin: prices.length ? Math.max(0, Math.min(...prices) * 0.85) : 0,
+          suggestedMax: prices.length ? Math.max(...prices) * 1.15 : 1
         }
       }
     }
@@ -2300,6 +2062,11 @@ async function showPriceHistoryModal(storeUuid, productId, productName, storeNam
 }
 
 function hidePriceHistoryModal() {
+  ++priceHistorySequence;
+  if (APP_STATE.chartInstance) {
+    APP_STATE.chartInstance.destroy();
+    APP_STATE.chartInstance = null;
+  }
   const modal = document.getElementById('price-history-modal');
   modal.classList.add('hidden');
   modal.classList.remove('flex');
@@ -2365,7 +2132,15 @@ function initEventListeners() {
       document.getElementById(target).classList.remove('hidden');
       APP_STATE.currentTab = target;
 
-      if (target === 'tab-global-search') {
+      if (APP_STATE.fastMode && !APP_STATE.loadedTabs.has(target)) {
+        APP_STATE.loadedTabs.add(target);
+        const loader = ({'tab-discounts':fetchDiscounts,'tab-stores':fetchNewStores,
+          'tab-products':fetchNewProducts,'tab-promos':fetchPromotions,
+          'tab-global-search':fetchGlobalProducts})[target];
+        if(loader) Promise.resolve(loader(1)).then(result=>{
+          if(result===false)APP_STATE.loadedTabs.delete(target);
+        }).catch(err=>{APP_STATE.loadedTabs.delete(target);console.error(err);});
+      } else if (!APP_STATE.fastMode && target === 'tab-global-search') {
         fetchGlobalProducts(APP_STATE.globalPage || 1);
       }
     });
@@ -2429,6 +2204,17 @@ function initEventListeners() {
     fetchNewStores(1);
   });
 
+  document.getElementById('store-scope-select')?.addEventListener('change', e => {
+    APP_STATE.filters.storeScope = e.target.value;
+    fetchNewStores(1);
+  });
+
+  // Tab 3: 老店新菜新增可直接輸入的關鍵字搜尋。
+  document.getElementById('product-search-input')?.addEventListener('input', debounce(e => {
+    APP_STATE.filters.productSearch = e.target.value;
+    fetchNewProducts(1);
+  }, 150));
+
   // Tab 4: 促銷活動篩選事件
   document.getElementById('promo-search-input')?.addEventListener('input', debounce(e => {
     APP_STATE.filters.promoSearch = e.target.value;
@@ -2475,12 +2261,34 @@ function initEventListeners() {
   document.getElementById('btn-refresh')?.addEventListener('click', async () => {
     const icon = document.getElementById('refresh-icon');
     icon?.classList.add('animate-spin');
-    await loadDashboardData();
-    showToast('資料已刷新', '已為您同步最新快照情報！', 'external', 2000);
-    setTimeout(() => icon?.classList.remove('animate-spin'), 600);
+    try {
+      if (window.UBER_RADAR_CONFIG?.ENABLE_STATIC) {
+        const client = await getPackedTursoClient();
+        await client.refreshCatalog();
+      }
+      const result = await loadDashboardData();
+      if (result === false) throw new Error('Unable to refresh verified catalog');
+      // The dashboard refreshes the discounts tab; reload the currently visible tab too.
+      const current = APP_STATE.currentTab;
+      const loader = ({'tab-stores':fetchNewStores,'tab-products':fetchNewProducts,
+        'tab-promos':fetchPromotions,'tab-global-search':fetchGlobalProducts})[current];
+      if (loader) {
+        await loader(1);
+        APP_STATE.loadedTabs.add(current);
+      }
+      showToast('資料已刷新', '已重新讀取最新已驗證資料版本', 'check-circle', 2000);
+    } catch (error) {
+      showDatabaseUnavailable(error);
+      showToast('更新失敗', '無法取得最新資料，請稍後重試。', 'alert-triangle', 4000);
+    } finally {
+      icon?.classList.remove('animate-spin');
+    }
   });
 
   // 彈窗關閉
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') hidePriceHistoryModal();
+  });
   document.getElementById('modal-close-btn')?.addEventListener('click', hidePriceHistoryModal);
   document.getElementById('price-history-modal')?.addEventListener('click', e => {
     if (e.target.id === 'price-history-modal') hidePriceHistoryModal();
@@ -2509,12 +2317,12 @@ function initTheme() {
     const dark = document.documentElement.classList.toggle('dark');
     localStorage.setItem('uber_radar_theme', dark ? 'dark' : 'light');
     if (APP_STATE.chartInstance) {
-      showPriceHistoryModal(
-        document.getElementById('modal-product-id').textContent.replace('Product ID: ', ''),
-        document.getElementById('modal-product-name').textContent,
-        document.getElementById('modal-store-name').textContent,
-        document.getElementById('modal-order-btn').href
-      );
+      const chart = APP_STATE.chartInstance;
+      for (const axis of Object.values(chart.options.scales)) {
+        axis.grid.color = dark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)';
+        axis.ticks.color = dark ? '#94a3b8' : '#64748b';
+      }
+      chart.update('none');
     }
   });
 }
@@ -2528,8 +2336,19 @@ function debounce(func, delay = 100) {
 }
 
 function formatBatchDate(batchStr) {
-  if (!batchStr || batchStr.length !== 14) return batchStr || '';
-  return `${batchStr.slice(0, 4)}/${batchStr.slice(4, 6)}/${batchStr.slice(6, 8)} ${batchStr.slice(8, 10)}:${batchStr.slice(10, 12)}`;
+  const text = String(batchStr || '');
+  if (/^\d{14}$/.test(text)) {
+    return `${text.slice(0, 4)}/${text.slice(4, 6)}/${text.slice(6, 8)} ${text.slice(8, 10)}:${text.slice(10, 12)}`;
+  }
+  const date = new Date(text);
+  if (!text || Number.isNaN(date.getTime())) return text;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    }).formatToParts(date).map(part => [part.type, part.value])
+  );
+  return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
 function escapeHtml(str) {
@@ -2562,6 +2381,9 @@ async function openUberEatsOrder(event, url, productName = '', storeName = '') {
     }
   }
 
+  // Open during the click gesture, before asynchronous clipboard access.
+  window.open(targetUrl, '_blank', 'noopener,noreferrer');
+
   if (productName && productName.trim()) {
     const cleanName = productName.trim();
     try {
@@ -2586,17 +2408,16 @@ async function openUberEatsOrder(event, url, productName = '', storeName = '') {
       );
     } catch (e) {
       showToast(
-        '正在前往 Uber Eats 店家',
+        '正在前往店家',
         `已為您在新分頁開啟店家，請於菜單中選購「${cleanName}」`,
         'external',
         3500
       );
     }
   } else {
-    showToast('前往 Uber Eats', '已為您在新分頁開啟 Uber Eats 店家網頁！', 'external', 3000);
+    showToast('前往店家', '已在新分頁開啟店家網頁！', 'external', 3000);
   }
 
-  window.open(targetUrl, '_blank', 'noopener,noreferrer');
 }
 
 function showToast(title, message, iconType = 'copy', duration = 4000) {

@@ -26,6 +26,11 @@ try:
 except ImportError:
     from .json_to_db import calculate_effective_price
 
+try:
+    from price_change import PriceChange
+except ImportError:
+    from .price_change import PriceChange
+
 # 確保標準輸出支援 UTF-8
 if hasattr(sys.stdout, 'reconfigure'):
     try:
@@ -115,8 +120,8 @@ class UberEatsAlertEngine:
         self,
         latest_batch: Optional[str] = None,
         prev_batch: Optional[str] = None,
-        min_discount_pct: float = 30.0,
-        min_savings_twd: float = 20.0
+        min_discount_pct: float = 0.0,
+        min_savings_twd: float = 0.0
     ) -> Dict[str, Any]:
         """
         執行全方位情報差異分析
@@ -204,8 +209,9 @@ class UberEatsAlertEngine:
         min_discount_pct: float,
         min_savings_twd: float
     ) -> List[Dict[str, Any]]:
-        """偵測兩批次間降價幅度達標的大特價商品"""
+        """Compare each SKU with its highest verified effective unit cost in 7 days."""
         cursor = conn.cursor()
+        cutoff=(datetime.strptime(latest_batch,'%Y%m%d%H%M%S')-timedelta(days=7)).strftime('%Y%m%d%H%M%S')
         query = """
         SELECT 
             p1.product_id,
@@ -226,16 +232,25 @@ class UberEatsAlertEngine:
             s.locality,
             s.street_address
         FROM products p1
-        JOIN products p0 ON p1.product_id = p0.product_id AND p1.store_id = p0.store_id
+        JOIN (
+            SELECT product_id, store_id, price, quantity, promo_type
+            FROM (
+                SELECT hist.product_id,hist.store_id,hist.price,hist.quantity,hist.promo_type,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY hist.product_id,hist.store_id
+                        ORDER BY hist.eff_price DESC,hist.crawled_time DESC
+                    ) AS rank_order
+                FROM products hist
+                WHERE hist.crawled_time >= ? AND hist.crawled_time < ?
+                  AND hist.price > 0 AND hist.eff_price > 0 AND hist.is_open = 1
+            ) candidates
+            WHERE rank_order = 1
+        ) p0 ON p1.product_id = p0.product_id AND p1.store_id = p0.store_id
         LEFT JOIN stores s ON p1.store_id = s.store_id AND p1.crawled_time = s.crawled_time
-        WHERE p0.crawled_time = ?
-          AND p1.crawled_time = ?
-          AND p0.price > 0
-          AND p1.price > 0
-          AND p0.is_open = 1
-          AND p1.is_open = 1
+        WHERE p1.crawled_time = ?
+          AND p1.price > 0 AND p1.is_open = 1
         """
-        cursor.execute(query, (prev_batch, latest_batch))
+        cursor.execute(query, (cutoff,latest_batch,latest_batch))
         rows = cursor.fetchall()
 
         discounts = []
@@ -246,15 +261,11 @@ class UberEatsAlertEngine:
             if prev_eff <= 0:
                 continue
 
-            savings = prev_eff - curr_eff
-            drop_pct = (savings / prev_eff) * 100.0
-
-            # 防呆機制：排除無促銷標籤但降幅 > 80% 的疑似店家漏打 0 手誤標價
-            curr_promo = r["curr_promo"] or "無"
-            if curr_promo == "無" and drop_pct > 80.0:
-                continue
-
-            if drop_pct >= min_discount_pct and savings >= min_savings_twd:
+            comparison = PriceChange.compare(prev_eff, curr_eff)
+            if PriceChange.qualifies(comparison, min_discount_pct, min_savings_twd):
+                savings = comparison["savings"]
+                drop_pct = comparison["discount_pct"]
+                curr_promo = r["curr_promo"] or "無"
                 raw_url = r["order_action_url"] or ""
                 clean_url = raw_url.replace("&amp;", "&")
                 discounts.append({

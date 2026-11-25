@@ -20,6 +20,7 @@
 import os
 import sys
 import json
+import math
 import glob
 import time
 import html
@@ -77,130 +78,18 @@ CHINESE_DIGIT_MAP = {
 }
 
 
-def extract_promo_info(sec_name: Optional[str], product_name: Optional[str], description: Optional[str]) -> Tuple[str, int]:
-    """
-    從分類名稱、商品名稱、商品描述中萃取促銷活動類型 (如 買1送1) 與 實質取得數量 (quantity)
-    回傳: (promo_type: str, quantity: int)
-    """
-    sec = sec_name or ""
-    pname = product_name or ""
-    desc = description or ""
-    
-    # 優先順序: 品名 > 分類 > 描述
-    texts = [pname, sec, desc]
-    
-    # 1. 匹配中文「買X送Y」或「買 X 送 Y」
-    pattern_buy_get = r"買\s*([1-9一二兩三四五])\s*送\s*([1-9一二兩三四五])"
-    for text in texts:
-        m = re.search(pattern_buy_get, text)
-        if m:
-            b_str, f_str = m.group(1), m.group(2)
-            b_val = CHINESE_DIGIT_MAP.get(b_str, 1)
-            f_val = CHINESE_DIGIT_MAP.get(f_str, 1)
-            promo_type = f"買{b_val}送{f_val}"
-            quantity = b_val + f_val
-            return promo_type, quantity
-
-    # 2. 匹配「買A送B」或「買 A 送 B」
-    for text in texts:
-        if re.search(r"買\s*[a-zA-Z]\s*送\s*[a-zA-Z]", text):
-            return "買A送B", 2
-            
-    # 3. 匹配英文 "Buy X, get Y (free)" / "Buy X Get Y" / "Buy X Free Y" / "Buy 1, get 1 free"
-    pattern_en = r"Buy\s*([1-9])\s*,?\s*(?:get|free)\s*([1-9])?"
-    for text in texts:
-        m = re.search(pattern_en, text, re.IGNORECASE)
-        if m:
-            b_val = int(m.group(1))
-            f_val = int(m.group(2)) if m.group(2) else 1
-            promo_type = f"買{b_val}送{f_val}"
-            quantity = b_val + f_val
-            return promo_type, quantity
-            
-    # 4. 匹配 "BOGO"
-    for text in texts:
-        if re.search(r"\bBOGO\b", text, re.IGNORECASE):
-            return "買1送1", 2
-
-    # 5. 匹配「加1元多1件」/「加一元多一件」
-    for text in texts:
-        if re.search(r"加\s*[1一]\s*元多\s*[1一]\s*件", text):
-            return "加1元多1件", 2
-
-    # 6. 匹配「第二件半價」/「第二杯半價」/「第2件半價」/「第2杯半價」
-    for text in texts:
-        if re.search(r"第\s*[2二兩]\s*[件杯項份]\s*半價", text):
-            return "第2件半價", 1
-
-    # 7. 匹配特定折扣與限時特惠 (quantity 為 1，但標註 promo_type)
-    for text in [sec, pname]:
-        m_disc = re.search(r"([1-9](?:\.[1-9])?)\s*折", text)
-        if m_disc:
-            return f"{m_disc.group(1)}折特惠", 1
-        if any(k in text for k in ["限時優惠", "限時特惠", "活動優惠", "特惠專區", "優惠專區", "優惠活動", "Special Offer", "Special Deals"]):
-            return "限時特惠", 1
-            
+def extract_promo_info(sec_name, product_name, description):
+    """DEPRECATED: never infer a price reduction from menu/category text."""
     return "無", 1
 
 
-def calculate_effective_price(price: float, promo_type: Optional[str], quantity: int = 1) -> float:
-    """
-    計算實質單件價格 (Effective Unit Price)
-    
-    規則：
-    1. 買 B 送 F (例如 買2送1, 買1送1):
-       消費者購買 B 件、實質取得 B+F 件。
-       實質單價 = (標價 * B) / (B + F)
-       - 買2送1 ($90): (90 * 2) / 3 = $60 (67折 / -33.3%)
-       - 買1送1 ($90): (90 * 1) / 2 = $45 (5折 / -50.0%)
-    2. 買A送B / BOGO:
-       等同買1送1，實質單價 = (標價 * 1) / 2
-    3. 加1元多1件 / 加一元多一件:
-       實質單價 = (標價 + 1.0) / 2
-    4. 第2件半價 / 第2杯半價:
-       實質單價 = (標價 * 1.5) / 2 = 標價 * 0.75
-    5. N折特惠 (如 8折):
-       實質單價 = 標價 * (N / 10.0)
-    6. 一般無促銷:
-       若 quantity > 1 則 標價 / quantity，否則即為標價
-    """
-    if price is None or price <= 0:
+def calculate_effective_price(price, promo_type=None, quantity=1):
+    """DEPRECATED: raw menu price only, never infer discounts from labels."""
+    try:
+        value = float(price)
+        return value if math.isfinite(value) and value > 0 else 0.0
+    except (TypeError, ValueError, OverflowError):
         return 0.0
-        
-    p_type = str(promo_type or "無").strip()
-    p_float = float(price)
-
-    # 1. 買 B 送 F (包含中文與英文 Buy X Get Y)
-    m_buy = re.search(r"買\s*([0-9一二兩三四五])\s*送\s*([0-9一二兩三四五])", p_type)
-    if m_buy:
-        b_val = CHINESE_DIGIT_MAP.get(m_buy.group(1), 1)
-        f_val = CHINESE_DIGIT_MAP.get(m_buy.group(2), 1)
-        if b_val + f_val > 0:
-            return round((p_float * b_val) / float(b_val + f_val), 2)
-
-    # 2. 買A送B / BOGO
-    if p_type in ("買A送B", "BOGO"):
-        return round(p_float * 0.5, 2)
-
-    # 3. 加1元多1件
-    if "加1元多1件" in p_type or "加一元多一件" in p_type:
-        return round((p_float + 1.0) / 2.0, 2)
-
-    # 4. 第2件半價 / 第2杯半價
-    if any(k in p_type for k in ["第2件半價", "第二件半價", "第2杯半價", "第二杯半價"]):
-        return round((p_float * 1.5) / 2.0, 2)
-
-    # 5. N折特惠
-    m_disc = re.search(r"([1-9](?:\.[1-9])?)\s*折", p_type)
-    if m_disc:
-        factor = float(m_disc.group(1)) / 10.0
-        return round(p_float * factor, 2)
-
-    # 6. 一般無促銷商品 (若 quantity > 1 進行多件拆分)
-    if quantity and quantity > 1:
-        return round(p_float / float(quantity), 2)
-
-    return round(p_float, 2)
 
 
 class UberEatsDBImporter:
@@ -558,7 +447,7 @@ class UberEatsDBImporter:
 
             # 營業狀態解析 (is_open: 1=營業中, 0=打烊)
             is_open_val = data.get("isOpen")
-            is_open = 1 if (is_open_val is True or is_open_val == 1 or is_open_val is None) else 0
+            is_open = 1 if is_open_val is True else 0
 
             # 營業時間解析 (store_business_hours)
             hours_list = data.get("openingHoursSpecification", [])
@@ -623,7 +512,16 @@ class UberEatsDBImporter:
                                     continue
 
                                 desc = html.unescape(str(item.get("description", ""))).strip() if item.get("description") else None
-                                promo_type, qty = extract_promo_info(sec_name, pname, desc)
+                                from verified_prices import quote_from_converted_item
+                                proof = quote_from_converted_item(item)
+                                source_promo = proof is not None
+                                if proof is not None and proof["kind"] == "SAME_SKU_BXGY":
+                                    promo_type = f'買{proof["buy_quantity"]}送{proof["free_quantity"]}'
+                                    qty = proof["received_quantity"]
+                                elif proof is not None and proof["kind"] == "DIRECT_DISCOUNT":
+                                    promo_type, qty = "直接折價", 1
+                                else:
+                                    promo_type, qty = "無", 1
 
                                 generic_sections = {
                                     "精選商品", "熱門商品", "人氣精選", "熱門", "Best sellers",
@@ -634,10 +532,15 @@ class UberEatsDBImporter:
                                 if pid in store_products:
                                     old_p = store_products[pid]
                                     # 若新舊任一處具有促銷活動標記，保留促銷活動與數量
-                                    if promo_type != "無" and (old_p["promo_type"] == "無" or qty > old_p["quantity"]):
+                                    if promo_type != "無" and (
+                                        (source_promo and old_p.get("promotion_source") != "native_structured")
+                                        or (old_p.get("promotion_source") != "native_structured"
+                                            and (old_p["promo_type"] == "無" or qty > old_p["quantity"]))
+                                    ):
                                         old_p["promo_type"] = promo_type
                                         old_p["quantity"] = qty
                                         old_p["price"] = price_val
+                                        old_p["promotion_source"] = "native_structured" if source_promo else "text"
 
                                     # 若舊分類為通用推薦區塊，而新分類為具體類別，則更新為具體類別與描述
                                     if old_p["category_name"] in generic_sections and sec_name not in generic_sections and sec_name:
@@ -660,6 +563,7 @@ class UberEatsDBImporter:
                                         "description": desc,
                                         "promo_type": promo_type,
                                         "quantity": qty,
+                                        "promotion_source": "native_structured" if source_promo else "text",
                                         "is_open": is_open
                                     }
 
