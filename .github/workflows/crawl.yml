@@ -122,6 +122,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+      - name: 使用唯一 FR 核心程式
+        run: python3 frt/bootstrap.py
       - name: 確認沒有其他爬取流程正在執行
         env:
           GH_TOKEN: ${{ github.token }}
@@ -356,6 +358,8 @@ jobs:
       progress: ${{ steps.plan.outputs.progress }}
     steps:
       - uses: actions/checkout@v4
+      - name: 使用唯一 FR 核心程式
+        run: python3 frt/bootstrap.py
       - name: 檢查完成狀態，只在有缺漏時建立接手任務
         id: plan
         env:
