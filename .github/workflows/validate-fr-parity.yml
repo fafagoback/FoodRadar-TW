@@ -47,7 +47,7 @@ jobs:
           for file in web/app.js web/packed-turso.js web/static-catalog.js web/data-contract.js; do node --check "$file"; done
       - name: Verify HF FRT new dataset access before full crawl
         env:
-          HF_TOKEN: \${{ secrets.HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python - <<'PY'
           import json,os
