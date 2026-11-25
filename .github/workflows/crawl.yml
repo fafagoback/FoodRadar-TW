@@ -261,6 +261,8 @@ jobs:
           pattern: frt-discovery-*
           path: data/discovery-parts
       - name: 合併全部掃描點，按店家 UUID 去重並輸出 FR 原生格式
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python src/national_discovery.py merge
       - name: 建立本次共用店家任務池
         run: python src/dynamic_crawl.py init
