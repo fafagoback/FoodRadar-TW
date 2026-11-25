@@ -75,16 +75,15 @@ def get_points(config):
     if scope=="custom":
         return validate_points(config["discovery_points"])
     if scope!="taiwan":raise ValueError("Unknown discovery scope")
+    if config.get("national_seed_file"):
+        from national_points import load_seed_points
+        return load_seed_points(Path(__file__).resolve().parents[1]/config["national_seed_file"])
     import requests
     r=requests.get(SOURCE,timeout=60);r.raise_for_status()
     if hashlib.sha256(r.content).hexdigest()!=SOURCE_SHA256:
         raise ValueError("Township boundary hash changed; refusing discovery")
     document=r.json()
-    native=township_points(document,config.get("discovery_grid_spacing",.04))
-    if config.get("national_seed_file"):
-        from national_points import combine_seed_points
-        return combine_seed_points(document,native,Path(config["national_seed_file"]))
-    return native
+    return township_points(document,config.get("discovery_grid_spacing",.04))
 
 def merge_store_points(previous,item):
     old=previous.setdefault("discovered_points",[])

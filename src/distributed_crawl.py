@@ -302,10 +302,12 @@ def load_shared_discovery(path: Path, config: dict, raw: Path, shard: int):
                 or any(type(r["pages"]) is not int or r["pages"]<1 for r in reports)
                 or sum(r["pages"] for r in reports)!=manifest["feed_pages"]):
             raise ValueError("Discovery plan did not finish all points")
-        if scope=="taiwan" and ({clean(p["county"]) for p in points}!=COUNTIES
+        if scope=="taiwan" and not config.get("national_seed_file"):
+            if ({clean(p["county"]) for p in points}!=COUNTIES
                   or len({(clean(p["county"]),p["town"]) for p in points if p.get("town")})!=368):
-            raise ValueError("National discovery plan is incomplete")
-        if scope!="taiwan" and points!=get_points(config):raise ValueError("Discovery plan changed")
+                raise ValueError("National discovery plan is incomplete")
+        elif points!=get_points(config):
+            raise ValueError("Discovery plan differs from configured original points")
     feed_root = path.parent / "raw"
     checksums = manifest.get("raw_checksums")
     existing = {
