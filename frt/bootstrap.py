@@ -67,7 +67,8 @@ def main():
         checkout_fr(old, sha)
         # Copy the official FR runtime only; preserve FRT's 3 workflows,
         # coordinate CSV, repo settings, README and adapter.
-        for name in ("src", "scripts", "web", "tests", "docs", "requirements.txt",
+        for name in ("src", "scripts", "web", "tests", "docs", "PRD.md", "PRICE_V2.md",
+                     "PROJECT_SPEC.md", "WORKFLOWS.md", "requirements.txt",
                      "requirements-crawl.txt", ".github/actions"):
             source = old/name
             if not source.exists():
