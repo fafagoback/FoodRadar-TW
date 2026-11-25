@@ -116,6 +116,16 @@ def main():
             ]:
                 text = text.replace(old_label,new_label)
             p.write_text(text,encoding="utf-8")
+        # This FR-only migration test requires legacy FR Git commits not present
+        # in FRT. FRT does not import FR checkpoints; test its own digest below.
+        test_file = ROOT/"tests/test_incremental_checkpoint.py"
+        source = test_file.read_text(encoding="utf-8")
+        marker = "    def test_real_layout_migration_exact_contract(self):"
+        if source.count(marker) != 1:
+            raise RuntimeError("FR historical-contract test changed; review required")
+        test_file.write_text(source.replace(marker,
+            '    @unittest.skip("FRT has no FR legacy Git history; FRT current digest is tested separately")\\n'+marker
+            .replace("\\n","\n")),encoding="utf-8")
         # FR native configuration is the authoritative structure; only FRT
         # scanning coordinates and storage identity are overlaid.
         frconfig=json.loads((old/"config.json").read_text(encoding="utf-8"))

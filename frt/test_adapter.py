@@ -19,6 +19,15 @@ class FRTOneSourceAcceptance(unittest.TestCase):
             [(str(int(p["id"])),float(p["latitude"]),float(p["longitude"]),p["county"]) for p in original])
         self.assertEqual(cfg["hf_repo_id"],"hub-google/Foodradar-TW")
         self.assertEqual(cfg["discovery_scope"],"custom")
+    def test_current_fr_compact_contract_for_isolated_frt(self):
+        from state_checkpoint import direct_contract_digest,compatible_direct_contract
+        contract=direct_contract_digest(ROOT)
+        self.assertEqual(len(contract),64)
+        self.assertTrue(compatible_direct_contract(
+            {"format":"foodradar-checkpoint-v4","contract_digest":contract},ROOT))
+        self.assertFalse(compatible_direct_contract(
+            {"format":"foodradar-checkpoint-v4","contract_digest":"foreign"},ROOT))
+
     def test_15_way_concurrent_ue_scan_merges_into_genuine_fr_format(self):
         cfg=load(ROOT/"config.json")
         uid=str(uuid.UUID(int=123))
