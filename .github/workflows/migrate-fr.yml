@@ -1,0 +1,56 @@
+name: FRT one-time FR source migration and tests
+on:
+  push:
+    branches: [migration/fr-tw-v1]
+    paths: [.github/workflows/migrate-fr.yml]
+permissions:
+  contents: write
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Copy pinned FR tree while retaining FRT grid
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          cp data/seeds/taiwan_scan_points_3km_land_only.csv "$tmp/seed.csv"
+          git fetch --depth=1 https://github.com/fafagoback/FoodRadar.git 58ee74e4acb8ddea9c0eabdcd04877705646360a
+          mkdir "$tmp/fr"
+          git archive FETCH_HEAD | tar -x -C "$tmp/fr"
+          mkdir -p migration
+          mv "$tmp/fr/.github/workflows" migration/workflows
+          git rm -r -f -- . ':(exclude).github/workflows/**' ':(exclude)migration/**'
+          cp -a "$tmp/fr/." .
+          rm -f .chatgpt-permission-test.txt
+          mkdir -p data/seeds
+          cp "$tmp/seed.csv" data/seeds/taiwan_scan_points_3km_land_only.csv
+          python migration/migrate.py
+          python migration/national_impl.py
+          git add -A
+          git add -f data/seeds/taiwan_scan_points_3km_land_only.csv
+          git config user.name "FRT migration"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Port pinned FR core and original Taiwan grid; stage three workflows"
+          git push origin HEAD:refs/heads/migration/fr-tw-v1
+      - name: Install exact FR dependencies
+        run: pip install -r requirements.txt
+      - name: Test unchanged FR formats and nationwide point coverage
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v
+          for file in web/app.js web/static-catalog.js web/data-contract.js web/packed-turso.js; do node --check "$file"; done
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          for p in Path("migration/workflows").glob("*.yml"):
+              data=yaml.safe_load(p.read_text())
+              assert "jobs" in data, p
+              print(p, len(data["jobs"]), "jobs")
+          PY
+      - name: Verify actual national coordinate plan (no store requests)
+        run: python src/national_discovery.py plan
