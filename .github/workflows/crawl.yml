@@ -54,6 +54,7 @@ jobs:
         run: |
           env -u FR_DISCOVERY_SCOPE python -m unittest discover -s tests -v
           env -u FR_DISCOVERY_SCOPE python -m unittest frt.test_adapter -v
+          env -u FR_DISCOVERY_SCOPE python -m unittest frt.test_workflow_parity -v
           node --check web/app.js
           node --check web/static-catalog.js
       - name: 確認新 HF Dataset 有效且可由本次 Token 存取
