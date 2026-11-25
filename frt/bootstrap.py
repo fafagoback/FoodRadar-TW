@@ -65,6 +65,12 @@ def main():
         raise RuntimeError("Refusing pre-existing FR checkout")
     try:
         checkout_fr(old, sha)
+        # Make upstream workflow definitions available for contract tests only.
+        # They are not committed to FRT or used as a second workflow implementation.
+        canonical = ROOT/"frt"/".upstream-workflows"
+        canonical.mkdir(exist_ok=True)
+        for filename in ("crawl.yml","pages.yml","cleanup.yml"):
+            shutil.copy2(old/".github/workflows"/filename,canonical/filename)
         # Copy the official FR runtime only; preserve FRT's 3 workflows,
         # coordinate CSV, repo settings, README and adapter.
         for name in ("src", "scripts", "web", "tests", "docs", "PRD.md", "PRICE_V2.md",
