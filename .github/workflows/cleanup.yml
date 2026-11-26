@@ -1,6 +1,9 @@
 name: FRT 03｜儲存空間清理
 run-name: 'FRT 03｜儲存空間清理｜執行編號 #${{ github.run_number }}'
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/cleanup.yml']
   workflow_run:
     workflows: ["FRT 02｜網站部署"]
     types: [completed]
@@ -21,7 +24,7 @@ concurrency:
 jobs:
   cleanup:
     name: 盤點並清理已無用途的歷史資料包
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')) }}
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name != 'push' || contains(github.event.head_commit.message, '[frt-cleanup-now]')) && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')) }}
     concurrency:
       group: foodradar-database-publisher
       cancel-in-progress: false
@@ -34,6 +37,8 @@ jobs:
         run: python3 frt/bootstrap.py
       - name: 安裝 HF 清理所需套件
         run: python3 -m pip install 'huggingface_hub>=0.30,<2'
+      - name: 驗證七天保留邊界、價格狀態及歷史版本清理
+        run: python3 -m unittest discover -s frt/tests -p 'test_hf_retention.py' -v
       - name: 清理歷史 Artifact 並產生中文報告
         env:
           GH_TOKEN: ${{ github.token }}
