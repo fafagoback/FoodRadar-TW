@@ -21,6 +21,16 @@ jobs:
         run: |
           pip install 'requests>=2.32,<3'
           python frt/bootstrap.py
+      - name: Verify menu script compiles and evidence protection is enabled
+        run: |
+          python -m py_compile frt/live_single_large_grocery.py
+          python - <<'PY'
+          from pathlib import Path
+          source=Path("frt/live_single_large_grocery.py").read_text(encoding="utf8")
+          assert 'root[rec' not in source, "Incorrect Path indexing would lose full capture"
+          assert 'tarfile.open(native_archive' in source
+          assert 'tarfile.open(evidence' in source
+          PY
       - name: Run controlled full menu single grocery trial
         env:
           PYTHONPATH: src
@@ -33,5 +43,6 @@ jobs:
           path: |
             frt-live-one-store-report.json
             frt-live-px-fengshan-full-menu.json.gz
+            frt-live-px-fengshan-ue-native-pages.tar.gz
           if-no-files-found: warn
           retention-days: 7
