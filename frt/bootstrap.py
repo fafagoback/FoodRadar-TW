@@ -92,6 +92,8 @@ def main():
         replace_file("src/pipeline.py", [
             ('    batch = str(meta.get("batch_id") or "")\n',
              '    if meta.get("_frt_retired") is True:\n        return meta["replay"]\n    batch = str(meta.get("batch_id") or "")\n'),
+            ('    if not manifests:\n        raise RuntimeError(f\'No immutable snapshots under {folder}/Raw; refusing DB update\')\n',
+             '    if not manifests and config.get("hf_raw_retention_days") != 7:\n        raise RuntimeError(f\'No immutable snapshots under {folder}/Raw; refusing DB update\')\n'),
             ('        records = list(executor.map(fetch_manifest, manifests))\n',
              '        records = list(executor.map(fetch_manifest, manifests))\n    if config.get("hf_raw_retention_days") == 7:\n        from hf_retention import history_records\n        records = history_records(api, records)\n'),
             ('    restored=None if rebuild_all else restore_direct(records,config)\n',
