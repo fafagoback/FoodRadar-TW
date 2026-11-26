@@ -1,5 +1,5 @@
-name: FRT Raw Offline Audit (isolated)
-run-name: FRT Raw offline audit 20261126072649
+name: FRT Large Supermarket Offline Experiment (isolated)
+run-name: FRT supermarket request reduction test using archived Raw
 on:
   push:
     branches: [audit-frt-raw-20261126]
@@ -9,7 +9,7 @@ permissions:
   contents: read
 jobs:
   audit:
-    name: Read HF Raw and measure duplicates without UE traffic
+    name: Read archived real supermarket catalog and compare page strategies
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -49,14 +49,16 @@ jobs:
           Path("audit-archive-path.txt").write_text(path, encoding="utf-8")
           print("FRT_HF_DOWNLOAD_COMPLETE="+json.dumps({"bytes":Path(path).stat().st_size}),flush=True)
           PY
-      - name: Analyze raw bytes, exact response duplication, catalog overlaps
+      - name: Replay 15 real large grocery stores and compare alternative category plans
         run: |
-          python -u frt/audit_raw_archive.py "$(cat audit-archive-path.txt)"
+          python -u frt/supermarket_strategy_trial.py "$(cat audit-archive-path.txt)"
       - name: Publish audit metrics, no production data changes
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: frt-raw-offline-audit-20261126
-          path: frt-raw-audit.json
+          name: frt-supermarket-strategy-trial-20261126
+          path: |
+            frt-supermarket-strategy-trial.json
+            frt-supermarket-strategy-summary.md
           if-no-files-found: warn
           retention-days: 14
