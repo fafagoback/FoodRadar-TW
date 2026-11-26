@@ -1,0 +1,52 @@
+name: FRT PX parent category discovery offline replay
+run-name: FRT PX parent discovery and alternative getStoreV1 subsection fields
+on:
+  push:
+    branches: [audit-frt-raw-20261126]
+    paths:
+      - '.github/workflows/ue-parent-discovery-replay.yml'
+permissions:
+  contents: read
+jobs:
+  discovery:
+    name: Read cached whole PX grocery; test discoverable child ids without parent pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'huggingface_hub>=0.34,<2' hf_xet 'requests>=2.32,<3'
+      - name: Bootstrap pinned FR catalog helpers
+        run: python frt/bootstrap.py
+      - name: Download immutable archive read only
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_DOWNLOAD_TIMEOUT: '600'
+          HF_XET_HIGH_PERFORMANCE: '1'
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from huggingface_hub import hf_hub_download
+          p=hf_hub_download(repo_id="hub-google/Foodradar-TW",
+              filename="Raw/20261126072649/capture.tar.gz",repo_type="dataset",
+              token=os.environ["HF_TOKEN"],
+              cache_dir=os.path.join(os.environ["RUNNER_TEMP"],"frt-parent-discovery"))
+          if Path(p).stat().st_size < 6000000000:raise RuntimeError("Capture incomplete")
+          Path("existing_archive_path.txt").write_text(p)
+          PY
+      - name: Compare official original store metadata and native parent pages
+        env:
+          PYTHONPATH: src
+        run: python -u frt/ue_parent_discovery_replay.py "$(cat existing_archive_path.txt)"
+      - name: Save offline evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frt-ue-px-parent-discovery-evidence
+          path: frt-px-parent-discovery.json
+          if-no-files-found: warn
+          retention-days: 14
