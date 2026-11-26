@@ -222,6 +222,17 @@ def run():
         report.update({"complete":False,"failure_reason":str(exc)[:300],
                        "exception_type":type(exc).__name__})
     finally:
+        # Persist every UE response even if menu conversion crashes.
+        evidence=Path("frt-live-px-fengshan-ue-native-pages.tar.gz")
+        if not evidence.exists():
+            try:
+                with tarfile.open(evidence,"w:gz",compresslevel=3) as tar:
+                    for p in sorted(root.rglob("*.body")):
+                        tar.add(p,arcname=p.relative_to(root).as_posix())
+                report["native_archive"]=str(evidence)
+                report["native_archive_bytes"]=evidence.stat().st_size
+            except Exception as archive_error:
+                report["native_archive_error"]=type(archive_error).__name__
         report.update({"UE_requests_total":s.count,
                        "UE_response_content_bytes":s.total_bytes,
                        "last_response_events":s.events[-8:],
