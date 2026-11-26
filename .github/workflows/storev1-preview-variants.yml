@@ -1,0 +1,27 @@
+name: FRT UE GetStoreV1 extended preview
+run-name: FRT UE 大全聯整店菜單單次回應 24 vs 500 vs 2000
+on:
+  push:
+    branches: [audit-frt-raw-20261126]
+    paths:
+      - '.github/workflows/storev1-preview-variants.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'requests>=2.32,<3'
+      - run: python -u frt/storev1_preview_variants.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frt-storev1-preview-variants
+          path: frt-storev1-preview-variants.json
+          retention-days: 7
+          if-no-files-found: warn
