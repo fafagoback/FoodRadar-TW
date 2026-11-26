@@ -202,10 +202,12 @@ def restore(api, rebuild=False):
     retired = retired_rows(files, rev)
     if rebuild and retired:
         raise ValueError("Full Raw rebuild is impossible after 7-day retention; use verified compact state")
-    if rebuild or not retired:
+    if rebuild:
         return
     if STATE + "manifest.json" not in files:
-        raise ValueError("Retired Raw requires durable compact checkpoint")
+        if retired:
+            raise ValueError("Retired Raw requires durable compact checkpoint")
+        return
     raw = read(STATE + "manifest.json", rev)
     meta = json.loads(raw)
     parts = checkpoint_parts(meta)
@@ -245,14 +247,15 @@ def cleanup(api, dry=False, now=None):
     from pipeline import raw_manifest_should_replay
     config()
     rev, files = snapshot(api)
-    expired = expired_batches(files, now or datetime.now(TW))
+    now = now or datetime.now(TW)
+    expired = expired_batches(files, now)
     targets = {p for p in files if batch_of(p) in expired}
     commits_before = len(api.list_repo_commits(REPO, repo_type="dataset", revision="main"))
     result = {"保留天數": 7, "到期批次": len(expired), "到期檔案": len(targets),
               "清理前歷史提交": commits_before, "模式": "僅盤點" if dry else "正式"}
     refs = api.list_repo_refs(REPO, repo_type="dataset", include_pull_requests=True)
     extra = [r.ref for r in refs.branches if r.name != "main"] + [r.ref for r in refs.tags]
-    extra += [r.ref for r in (refs.pull_requests or [])]
+    extra += [r.ref for r in (getattr(refs, "pull_requests", None) or [])]
     # Other explicit refs are not silently destroyed. They can retain old LFS data.
     if extra:
         result["阻擋清理的其他引用"] = ", ".join(extra)
@@ -261,6 +264,13 @@ def cleanup(api, dry=False, now=None):
     if dry:
         report(result)
         return
+    if os.getenv("GITHUB_REPOSITORY"):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from cleanup_artifacts import active_crawl, active_deploy
+        if active_crawl() or active_deploy():
+            result["狀態"] = "有執行中的 01/02，保留資料，交由下次 03 清理"
+            report(result)
+            return
     if targets:
         if STATE + "manifest.json" not in files:
             raise ValueError("No verified durable checkpoint; refusing destructive Raw expiry")
@@ -279,8 +289,6 @@ def cleanup(api, dry=False, now=None):
         # A malformed/missing manifest is not silently destroyed.
         if expired - {batch_of(row["path"]) for row in entries}:
             raise ValueError("Expired Raw batch lacks a verified manifest receipt")
-        live = [p for p in files if p not in targets and BATCH.fullmatch(p)
-                and p.endswith("/manifest.json")]
         # Keep existing pointers only if their referenced archive still exists.
         for pointer in ("Raw/latest.json", "Raw/latest-partial.json"):
             if pointer in files:
@@ -293,7 +301,7 @@ def cleanup(api, dry=False, now=None):
         api.create_commit(REPO, repo_type="dataset", revision="main", parent_commit=rev,
                           operations=ops, commit_message="Expire FRT Raw older than seven days")
         rev, after = snapshot(api)
-        if targets & after or not expired_batches(after, now or datetime.now(TW)) == set():
+        if targets & after or expired_batches(after, now):
             raise ValueError("Expired Raw remains after delete commit")
         if read(LEDGER, rev) != pack(ledger):
             raise ValueError("Retired Raw receipt verification failed")
