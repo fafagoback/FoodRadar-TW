@@ -2,5 +2,6 @@
   "fr_core_sha": "7606e88507445e6941bc4450f71ed4fc773a8106",
   "scan_points_csv": "data/seeds/taiwan_scan_points_3km_land_only.csv",
   "hf_repo_id": "hub-google/Foodradar-TW",
-  "hf_folder": "Raw"
+  "hf_folder": "Raw",
+  "hf_raw_retention_days": 7
 }
