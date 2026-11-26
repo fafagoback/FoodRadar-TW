@@ -65,7 +65,8 @@ class NationalMergeIOTests(unittest.TestCase):
             self.assertEqual(len(result["raw_checksums"]), adapter.WORKERS)
             manifest = root / "data" / "discovery" / "discovery.json"
             self.assertEqual(json.loads(manifest.read_text(encoding="utf-8")), result)
-            self.assertEqual(manifest.stat().st_size, len(manifest.read_bytes()))
+            pretty_bytes = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
+            self.assertLess(manifest.stat().st_size, len(pretty_bytes))
             self.assertNotIn(b"\\n  ", manifest.read_bytes())
             for relative, expected in result["raw_checksums"].items():
                 data = (root / "data" / "discovery" / "raw" / relative).read_bytes()
