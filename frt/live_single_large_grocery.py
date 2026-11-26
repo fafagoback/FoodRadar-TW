@@ -9,6 +9,7 @@ native child UUID partitions. Other sections use pinned FR capture_catalog.
 """
 import collections
 import gzip
+import tarfile
 import json
 import os
 import sys
@@ -24,7 +25,6 @@ from catalog_complete import (
 from menu_core import attach_delivery_location,convert_api_data_to_schema
 from snapshot_validation import validate_document
 
-SID="54b6106a-8f4b-48ad-8014-7ba99e6c9e98"  # overridden below: exact audited UUID
 SID="54b6106a-8f4b-48ad-8014-7ba334513ee2"
 URL="https://www.ubereats.com/tw/store/%E5%A4%A7%E5%85%A8%E8%81%AF-%E9%B3%B3%E5%B1%B1%E5%BA%97/VLYQao9LSK2AFHujNFE-4g"
 LAT,LON=22.63312,120.35507
@@ -102,7 +102,7 @@ def doc_item_summary(doc):
     return {"unique_product_ids":len(unique),"price_verification_statuses":dict(price_valid),
             "offer_types":dict(offers_by_kind),
             "products_with_native_ue_menu_price":sum(
-                type(i.get("verified_price",{}).get("menu_price_cents")) is int
+                type((i.get("verified_price") or {}).get("menu_price_cents")) is int
                 for i in unique.values())}
 
 def run():
@@ -124,6 +124,7 @@ def run():
         if not ok:raise StopAll("Invalid delivery location")
         base=s.post("https://www.ubereats.com/api/getStoreV1",
             json={"storeUuid":SID,"sfNuggetCount":24},headers=HEADERS,timeout=30)
+        save_body(root,f"stores/{SID}-live-getStoreV1.body",base)
         data=base.json().get("data") or {}
         if not isinstance(data,dict) or "大全聯" not in str(data.get("title") or ""):
             raise StopAll("Store identity/name not verified from UE getStoreV1")
@@ -196,7 +197,14 @@ def run():
             },ensure_ascii=False),flush=True)
         if deep_seen!=set(DEEP_EXPECTED):
             raise StopAll("Known deep sections absent from current native roster")
-        pages=[json.loads((root[rec["path"]]).read_bytes()) for rec in page_refs]
+        # Persist a replayable immutable raw capture BEFORE menu decoding.
+        native_archive=Path("frt-live-px-fengshan-ue-native-pages.tar.gz")
+        with tarfile.open(native_archive,"w:gz",compresslevel=3) as output:
+            for file in sorted(root.rglob("*.body")):
+                output.add(file,arcname=file.relative_to(root).as_posix())
+        report["native_archive"]=str(native_archive)
+        report["native_archive_bytes"]=native_archive.stat().st_size
+        pages=[json.loads((root/rec["path"]).read_bytes()) for rec in page_refs]
         doc=convert_api_data_to_schema(merge_catalog_pages(data,pages),URL)
         validate_document(doc)
         summary=doc_item_summary(doc)
@@ -210,6 +218,7 @@ def run():
             "sections_finished":len(inspected),"actual_catalog_page_refs":len(page_refs),
             "products":summary,"section_reports":inspected})
     except Exception as exc:
+        traceback.print_exc()
         report.update({"complete":False,"failure_reason":str(exc)[:300],
                        "exception_type":type(exc).__name__})
     finally:
