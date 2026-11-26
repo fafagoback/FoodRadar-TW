@@ -1,0 +1,29 @@
+name: FRT UE bounded native menu search test
+run-name: FRT one-store UE empty-search probe (2 requests maximum)
+on:
+  push:
+    branches: [audit-frt-raw-20261126]
+    paths:
+      - '.github/workflows/ue-one-store-search-probe.yml'
+permissions:
+  contents: read
+jobs:
+  probe:
+    name: One PX Mart store, two UE requests max, no retries
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'requests>=2.32,<3'
+      - name: Execute bounded read-only probe
+        run: python -u frt/ue_one_store_search_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frt-ue-single-store-search-probe
+          path: frt-ue-single-store-search-probe.json
+          if-no-files-found: warn
+          retention-days: 7
