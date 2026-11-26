@@ -17,7 +17,7 @@ from pathlib import Path
 CATALOG = re.compile(r"(?:^|/)catalog/([0-9a-f-]{36})/.*?-section-([0-9]+)-([0-9a-f-]{36})-sub-(none|[0-9a-f-]{36})-")
 # The actual 15 largest catalog archives found by the earlier complete HF audit.
 CANDIDATES = [
-    "754df551-af4b-48ad-8014-7ba99e6c9e98",
+    "754fd551-af4a-4981-a665-2f643b4a6816",
     "8406b8c1-c02d-4ea7-b24a-c05547619a65",
     "768d633d-c24d-47cc-8b6f-607f521f4426",
     "a973247c-4bf5-4fdd-8f4a-91bc6a9ed92f",
@@ -26,12 +26,12 @@ CANDIDATES = [
     "d75563ea-a72b-4691-817c-1b5354427326",
     "fc673ba5-5b0f-5003-9659-609729c31114",
     "17680a59-bf1b-4508-ad3a-82d6c4d3a496",
-    "17c3f464-4178-47f9-b50a-0de4183e1f5e",
-    "54b6106a-8f4b-48ad-8014-7ba99e6c9e98",
-    "f14aefa0-b0de-451f-9d8a-41e39726ad45",
+    "17c3f464-e844-49ab-b4aa-b4d5d8290b02",
+    "54b6106a-8f4b-48ad-8014-7ba334513ee2",
+    "f14aefa0-b0de-451f-9d8a-af3c898e9de2",
     "c296e7e7-504d-41ec-83c7-4998b561c234",
     "d3c5f77f-0705-430b-a038-806e16e28a11",
-    "cba593d8-69e3-4f90-8521-eed74b0ec0ad",
+    "cba593d8-69e3-4fcb-b9d2-39c345b12a76",
 ]
 GROCERY_MARKERS = ("家樂福", "全聯", "全聯福利中心", "大潤發", "愛買", "美廉社", "頂好",
                    "好市多", "carrefour", "px mart", "pxmart", "costco", "rt-mart",
@@ -48,14 +48,20 @@ def json_hash(obj):
         digest_size=12).hexdigest()
 
 def value_projection(value):
-    """Preserve every nested subtree under price/promotion/availability keys."""
+    """Extract business fields without mutating the original native response."""
     if isinstance(value, dict):
-        return {k: v if any(t in k.lower() for t in PRICE_WORDS) else value_projection(v)
-                for k, v in value.items()
-                if any(t in k.lower() for t in PRICE_WORDS) or value_projection(v) not in (None, {}, [])}
+        out = {}
+        for k, v in value.items():
+            if any(t in k.lower() for t in PRICE_WORDS):
+                out[k] = v
+            else:
+                sub = value_projection(v)
+                if sub not in (None, {}, []):
+                    out[k] = sub
+        return out
     if isinstance(value, list):
-        nested = [value_projection(v) for v in value]
-        return [v for v in nested if v not in (None, {}, [])]
+        out = [value_projection(v) for v in value]
+        return [v for v in out if v not in (None, {}, [])]
     return None
 
 def item_signatures(item):
