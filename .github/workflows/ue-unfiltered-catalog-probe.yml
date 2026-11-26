@@ -1,0 +1,30 @@
+name: FRT UE single unfiltered grocery catalog experiment
+run-name: FRT one-store direct UE full-catalog attempt (1 request)
+on:
+  push:
+    branches: [audit-frt-raw-20261126]
+    paths:
+      - '.github/workflows/ue-unfiltered-catalog-probe.yml'
+permissions:
+  contents: read
+jobs:
+  probe:
+    name: One UE request max, no filter, pagination disabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'requests>=2.32,<3'
+      - name: Single-request UE read only
+        run: python -u frt/ue_unfiltered_catalog_probe.py
+      - name: Save result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frt-ue-unfiltered-catalog
+          path: frt-ue-unfiltered-catalog.json
+          if-no-files-found: warn
+          retention-days: 7
