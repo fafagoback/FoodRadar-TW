@@ -159,7 +159,9 @@ jobs:
       - name: 取得程式碼
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # FRT has no FR history; the pinned FR source is fetched separately.
+          # Avoid transferring FRT's large legacy Git history to every publisher.
+          fetch-depth: 1
       - name: 使用唯一 FR 核心程式
         run: python3 frt/bootstrap.py
       - name: 爬取前清空 SB 共用任務池（保留表結構）
@@ -372,7 +374,9 @@ jobs:
       - name: 取得程式碼
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # FRT has no FR history; the pinned FR source is fetched separately.
+          # Avoid transferring FRT's large legacy Git history to every publisher.
+          fetch-depth: 1
       - name: 使用唯一 FR 核心程式
         run: python3 frt/bootstrap.py
       - name: 準備程式執行環境
