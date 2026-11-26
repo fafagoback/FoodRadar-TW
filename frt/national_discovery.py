@@ -8,7 +8,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -113,9 +112,10 @@ def merge(config,root=ROOT):
         raise ValueError("All 15 FRT UE scans must be present")
     raw.mkdir(parents=True)
     (raw/"feed").mkdir()
-    stores={};reports={};pages=0
+    stores={};reports={};pages=0;bodies={}
     for index in range(WORKERS):
         subset=points[index::WORKERS]
+        subset_ids={point["id"] for point in subset}
         part=parts/f"frt-discovery-{index}"
         obj=load(part/"part.json")
         coverage=obj["coverage"]
@@ -134,13 +134,16 @@ def merge(config,root=ROOT):
             raise ValueError(f"FRT scan shard {index}: immutable HTTP hash mismatch")
         if any(not name.startswith(f"feed/shard-{index:02d}/") for name in actual):
             raise ValueError("FRT Feed HTTP shard mixup")
-        if {name.split("/")[2] for name in actual}!={p["id"] for p in subset}:
+        if {name.split("/")[2] for name in actual}!=subset_ids:
             raise ValueError("Missing raw HTTP evidence for UE coordinate")
+        if set(actual).intersection(bodies):
+            raise ValueError("Duplicate FRT Feed Raw response between shards")
+        bodies.update(actual)
         for item in obj["stores"]:
             sid=canonical_store_uuid(item["store_uuid"],item["store_url"])
             if sid!=item["store_uuid"] or not item.get("discovered_points"):
                 raise ValueError("Invalid FRT scanned store UUID/provenance")
-            if any(p["point_id"] not in {q["id"] for q in subset}
+            if any(p["point_id"] not in subset_ids
                    for p in item["discovered_points"]):
                 raise ValueError("FRT store from another coordinate partition")
             if sid in stores:merge_store_points(stores[sid],item)
@@ -150,11 +153,16 @@ def merge(config,root=ROOT):
                 raise ValueError("Duplicate UE scan point")
             reports[report["point_id"]]=report
         pages+=obj["pages"]
-        shutil.move(str(part_raw/"feed"/f"shard-{index:02d}"),
-                    str(raw/"feed"/f"shard-{index:02d}"))
+        # Both directories are in the same Actions workspace: rename is atomic.
+        # The input bytes were already hashed and verified above.
+        os.replace(part_raw/"feed"/f"shard-{index:02d}",
+                   raw/"feed"/f"shard-{index:02d}")
     if not stores or set(reports)!={p["id"] for p in points}:
         raise ValueError("Incomplete FRT nationwide store roster")
-    bodies=checksums(raw)
+    # Verify the final path inventory without reading and hashing all Feed
+    # HTTP bodies for a second time. Atomic renames preserve verified bytes.
+    if {p.relative_to(raw).as_posix() for p in raw.rglob("*.body")}!=set(bodies):
+        raise ValueError("FRT Feed Raw inventory changed during merge")
     section_weights={}
     estimates=latest_raw_workload_weights(config,section_weights)
     feed={
@@ -168,8 +176,10 @@ def merge(config,root=ROOT):
             "reports":[reports[p["id"]] for p in points]},
     }
     location=folder/"discovery.json"
-    location.write_text(json.dumps(feed,ensure_ascii=False,indent=2),encoding="utf-8")
-    print(f"FRT_UE_UNIQUE_STORES={len(stores)} POINTS={len(points)} PAGES={pages} FR_FORMAT=foodradar-shared-feed-v1",flush=True)
+    # The shared manifest is downloaded by all 15 crawl workers; compact
+    # JSON keeps its identical content/contract with fewer transferred bytes.
+    location.write_text(json.dumps(feed,ensure_ascii=False,separators=(",",":")),encoding="utf-8")
+    print(f"FRT_UE_UNIQUE_STORES={len(stores)} POINTS={len(points)} PAGES={pages} FR_FORMAT=foodradar-shared-feed-v1 FEED_MANIFEST_BYTES={location.stat().st_size}",flush=True)
     return feed
 
 def main():
