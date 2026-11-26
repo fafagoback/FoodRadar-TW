@@ -60,6 +60,8 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
+      - name: 全台掃描合併前驗證 FRT 自有 Adapter（不發出 UE API）
+        run: python -m unittest discover -s frt/tests -v
       - name: 確認新 HF Dataset 有效且可由本次 Token 存取
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -386,6 +388,7 @@ jobs:
         if: ${{ needs.discover_once.result == 'skipped' }}
         run: |
           env -u FR_DISCOVERY_SCOPE python -m unittest discover -s tests -v
+          python -m unittest discover -s frt/tests -v
           node --check web/app.js
           node --check web/packed-turso.js
           node --check web/static-catalog.js
