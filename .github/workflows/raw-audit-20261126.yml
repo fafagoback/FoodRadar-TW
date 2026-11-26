@@ -1,0 +1,62 @@
+name: FRT Raw Offline Audit (isolated)
+run-name: FRT Raw offline audit 20261126072649
+on:
+  push:
+    branches: [audit-frt-raw-20261126]
+    paths:
+      - '.github/workflows/raw-audit-20261126.yml'
+permissions:
+  contents: read
+jobs:
+  audit:
+    name: Read HF Raw and measure duplicates without UE traffic
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install HF read-only downloader
+        run: pip install 'huggingface_hub>=0.34,<2' hf_xet
+      - name: Download existing immutable HF capture (read-only)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_DOWNLOAD_TIMEOUT: '600'
+          HF_XET_HIGH_PERFORMANCE: '1'
+        run: |
+          set -euo pipefail
+          df -h .
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from huggingface_hub import HfApi, hf_hub_download
+          repo = "hub-google/Foodradar-TW"
+          batch = "Raw/20261126072649/"
+          archive = batch + "capture.tar.gz"
+          metadata = batch + "manifest.json"
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          rows = api.get_paths_info(repo_id=repo, paths=[archive, metadata], repo_type="dataset")
+          summary = [{"path": r.path, "size_bytes": r.size} for r in rows]
+          if not any(r["path"] == archive and r["size_bytes"] > 6000000000 for r in summary):
+              raise RuntimeError("Expected archived 6.66 GB capture not found")
+          print("FRT_HF_FILE_SIZES=" + json.dumps(summary), flush=True)
+          path = hf_hub_download(
+              repo_id=repo, filename=archive, repo_type="dataset",
+              token=os.environ["HF_TOKEN"],
+              cache_dir=os.path.join(os.environ["RUNNER_TEMP"],"frt-audit-hf")
+          )
+          Path("audit-archive-path.txt").write_text(path, encoding="utf-8")
+          print("FRT_HF_DOWNLOAD_COMPLETE="+json.dumps({"bytes":Path(path).stat().st_size}),flush=True)
+          PY
+      - name: Analyze raw bytes, exact response duplication, catalog overlaps
+        run: |
+          python -u frt/audit_raw_archive.py "$(cat audit-archive-path.txt)"
+      - name: Publish audit metrics, no production data changes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frt-raw-offline-audit-20261126
+          path: frt-raw-audit.json
+          if-no-files-found: warn
+          retention-days: 14
