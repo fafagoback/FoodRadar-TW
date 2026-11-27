@@ -1,4 +1,5 @@
 name: FRT 01｜全台爬蟲已停止
+# Revalidated parity after removing redundant manual republish test from shared FR core.
 # 原爬蟲已停止；更新後的待恢復版本在 frt/crawl.resume.yml，未經使用者明確要求不得恢復。
 on:
   push:
