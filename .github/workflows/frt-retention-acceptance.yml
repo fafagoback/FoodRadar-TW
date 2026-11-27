@@ -1,0 +1,40 @@
+name: FRT 60-day retention one-time offline acceptance
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/frt-retention-acceptance.yml']
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Load pinned FR core
+        run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: pip install -r requirements.txt
+      - name: FRT 60-day price and HF Raw regression
+        run: |
+          python3 -m unittest discover -s tests -p test_price_retention.py -v
+          python3 -m unittest discover -s tests -p test_hf_retention.py -v
+          python3 -m unittest discover -s tests -p test_incremental_checkpoint.py -v
+          python3 -m unittest discover -s frt/tests -v
+      - name: Verify exact FRT prior durable checkpoint contract migration
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"src")
+          from state_checkpoint import direct_contract_digest,retention_predecessor,compatible_direct_contract
+          before=retention_predecessor()
+          after=direct_contract_digest()
+          assert before and before != after, "Old checkpoint provenance reconstruction failed"
+          assert compatible_direct_contract({"format":"foodradar-checkpoint-v4","contract_digest":before}), "Prior FRT checkpoint cannot be restored"
+          print("FRT_ROLLING_60_DAY_CHECKPOINT_MIGRATION=PASS")
+          PY
