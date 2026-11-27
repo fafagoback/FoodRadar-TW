@@ -1,6 +1,7 @@
 name: FRT 04｜DB 第二階段工作池（離線）
 # Full verification consumes only stored crawl artifacts, never calls UE or publishes live DB.
 # Verify historical checkpoint migration before any new nationwide DB workload.
+# Correct Raw batch for original source Action 45886126553: 20261127071423.
 on:
   push:
     branches: [main]
