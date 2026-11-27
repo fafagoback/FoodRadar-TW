@@ -173,10 +173,98 @@ jobs:
           if sha and sha!=meta['archive_sha256']:raise SystemExit('Raw SHA mismatch')
           print('HF_RAW_AVAILABLE',batch,files[0].size)
           PY
+  db_recovery_plan:
+    name: DB 故障接手｜只重新分配尚未持久化的店家
+    needs: [db_00, db_workers]
+    if: ${{ always() && !cancelled() && needs.db_00.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.mode == 'run' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      pending: ${{ steps.plan.outputs.pending }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'requests>=2.31,<3'
+      - name: 所有初次工作機停止後才重領未完成工作
+        id: plan
+        run: |
+          python - <<'PY'
+          import json,os,sys
+          sys.path.insert(0,'src')
+          from db_task_pool import DBTaskPool
+          pool=DBTaskPool()
+          before=pool.status()
+          unfinished=sum(int(v) for k,v in before.items() if k not in ('completed','failed'))
+          released=pool.requeue() if unfinished else {'requeued':0}
+          after=pool.status()
+          remaining=sum(int(v) for k,v in after.items() if k not in ('completed','failed'))
+          print('FOODRADAR_DB_RECOVERY='+json.dumps({
+            'before':before,'after':after,'released':released}),flush=True)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+            f.write('pending='+str(remaining>0).lower()+'\n')
+          PY
+
+  db_recovery_workers:
+    name: DB 接手 ${{ matrix.worker }}｜補領未完成店家
+    needs: [db_00, db_recovery_plan]
+    if: ${{ needs.db_recovery_plan.result == 'success' && needs.db_recovery_plan.outputs.pending == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker: ['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15']
+    permissions:
+      id-token: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: db-stage-plan
+          path: data/
+      - name: 接手原工作池剩餘店家（不呼叫 UE）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FR_DB_WAVE: '1'
+        run: |
+          DONE_FILE="data/db-worker-${{ matrix.worker }}.done"
+          nohup python -u scripts/db_stage_worker.py heartbeat \
+            --index "${{ matrix.worker }}" --done-file "$DONE_FILE" > db-stage-heartbeat.log 2>&1 < /dev/null &
+          python -u scripts/db_stage_worker.py worker --index "${{ matrix.worker }}" \
+            --source-run-id "${{ inputs.source_run_id }}" --batch-id "${{ inputs.batch_id }}"
+      - name: 上傳故障接手成果
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-worker-${{ github.run_id }}-${{ matrix.worker }}-w01
+          path: data/db-worker-${{ matrix.worker }}/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 5
+      - name: 確認已持久保存的接手任務
+        run: python scripts/db_stage_worker.py finalize --index "${{ matrix.worker }}"
+      - name: 停止接手工作機租約續約
+        if: always()
+        run: |
+          touch "data/db-worker-${{ matrix.worker }}.done"
+          if test -f db-stage-heartbeat.log; then tail -20 db-stage-heartbeat.log; fi
+
   db_gate:
     name: DB 工作池｜核對全部店家完成或符合 5% 失敗率
-    needs: [db_00, db_workers, hf_16]
-    if: ${{ always() && !cancelled() && needs.db_00.result == 'success' && needs.hf_16.result == 'success' }}
+    needs: [db_00, db_workers, db_recovery_plan, db_recovery_workers, hf_16]
+    if: ${{ always() && !cancelled() && needs.db_00.result == 'success' && needs.db_recovery_plan.result == 'success' && needs.hf_16.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
