@@ -61,7 +61,7 @@ jobs:
         run: |
           python -u scripts/db_stage_smoke.py \
             --source-run-id 45886126553 \
-            --batch-id 20261126072649 \
+            --batch-id 20261127071423 \
             --source-sha 3fd98536e4807db85acf473cd9d773f177d528a4
   db_00:
     name: DB 00｜依既有爬蟲結果建立專用 Supabase 工作池
@@ -82,7 +82,7 @@ jobs:
       - name: 以 Supabase 游標分批建池（不重新下載原始資料或呼叫 UE）
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/db_stage_plan.py --source-run-id "${{ inputs.source_run_id || '45886126553' }}"
+        run: python scripts/db_stage_plan.py --source-run-id "${{ inputs.source_run_id || '45886126553' }}" --batch-id "${{ inputs.batch_id || '20261127071423' }}"
       - uses: actions/upload-artifact@v4
         with:
           name: db-stage-plan
@@ -122,7 +122,7 @@ jobs:
           nohup python -u scripts/db_stage_worker.py heartbeat \
             --index "${{ matrix.worker }}" --done-file "$DONE_FILE" > db-stage-heartbeat.log 2>&1 < /dev/null &
           python -u scripts/db_stage_worker.py worker --index "${{ matrix.worker }}" \
-            --source-run-id "${{ inputs.source_run_id || '45886126553' }}" --batch-id "${{ inputs.batch_id || '20261126072649' }}"
+            --source-run-id "${{ inputs.source_run_id || '45886126553' }}" --batch-id "${{ inputs.batch_id || '20261127071423' }}"
       - uses: actions/upload-artifact@v4
         with:
           name: db-worker-${{ github.run_id }}-${{ matrix.worker }}
@@ -160,7 +160,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN: ${{ inputs.source_run_id || '45886126553' }}
-          RAW_BATCH: ${{ inputs.batch_id || '20261126072649' }}
+          RAW_BATCH: ${{ inputs.batch_id || '20261127071423' }}
           DB_STAGE_MODE: ${{ inputs.mode || 'validate' }}
         run: |
           if [[ "$DB_STAGE_MODE" == "run" ]]; then
@@ -239,7 +239,7 @@ jobs:
           nohup python -u scripts/db_stage_worker.py heartbeat \
             --index "${{ matrix.worker }}" --done-file "$DONE_FILE" > db-stage-heartbeat.log 2>&1 < /dev/null &
           python -u scripts/db_stage_worker.py worker --index "${{ matrix.worker }}" \
-            --source-run-id "${{ inputs.source_run_id || '45886126553' }}" --batch-id "${{ inputs.batch_id || '20261126072649' }}"
+            --source-run-id "${{ inputs.source_run_id || '45886126553' }}" --batch-id "${{ inputs.batch_id || '20261127071423' }}"
       - name: 上傳故障接手成果
         uses: actions/upload-artifact@v4
         with:
@@ -335,7 +335,7 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "push" || "${{ inputs.mode }}" == "validate" ]]; then
             python -u scripts/db_stage_merge.py --source-run-id "${{ inputs.source_run_id || '45886126553' }}" \
-              --batch-id "${{ inputs.batch_id || '20261126072649' }}" --verify-only
+              --batch-id "${{ inputs.batch_id || '20261127071423' }}" --verify-only
           else
             python -u scripts/db_stage_merge.py --source-run-id "${{ inputs.source_run_id }}" \
               --batch-id "${{ inputs.batch_id }}"
