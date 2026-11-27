@@ -45,7 +45,9 @@ class WorkflowParity(unittest.TestCase):
         for filename in ("pages.yml","cleanup.yml"):
             original=load(filename,upstream=True)["jobs"]
             derivative=load(filename)["jobs"]
-            self.assertEqual(set(derivative), set(original),\n                             f"{filename}: unexpected or missing jobs")\n            for name in original:
+            self.assertEqual(set(derivative), set(original),
+                             f"{filename}: unexpected or missing jobs")
+            for name in original:
                 job=original_steps(derivative[name])
                 # Only publication destination URL differs for Pages.
                 if filename=="pages.yml" and name=="deploy":
