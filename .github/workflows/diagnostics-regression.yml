@@ -19,6 +19,10 @@ jobs:
       - run: python -m unittest discover -s tests -p 'test_catalog_complete.py' -v
       - run: python -m unittest discover -s tests -p 'test_adaptive_threads.py' -v
       - run: python -m unittest discover -s tests -p 'test_sb_task_pool_transport.py' -v
+      - run: python -m unittest discover -s frt -p 'test_adapter.py' -v
+      - run: pip install pyyaml
+      - run: python -m unittest discover -s frt -p 'test_workflow_parity.py' -v
+      - run: python -m unittest discover -s tests -v
       - run: |
           python - <<'PY'
           from pathlib import Path
