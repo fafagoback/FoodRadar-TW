@@ -2,7 +2,7 @@ name: FRT 01｜全台爬蟲已停止
 # 原爬蟲已停止；更新後的待恢復版本在 frt/crawl.resume.yml，未經使用者明確要求不得恢復。
 on:
   push:
-    branches: [main]
+    branches: [main, fix/frt-core-parity-20261127]
     paths: ['.github/workflows/crawl.yml']
   workflow_dispatch:
     inputs:
@@ -18,7 +18,7 @@ permissions:
 jobs:
   stop_existing:
     name: 停止所有 FRT 爬蟲執行
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     steps:
       - name: 取消進行中及等待中的爬蟲
@@ -66,7 +66,7 @@ jobs:
 
   verify_offline:
     name: 離線救援回歸測試（零 UE 請求）
-    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[frt-offline-recover]') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[frt-offline-recover]') || contains(github.event.head_commit.message, '[frt-core-test]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,6 +85,7 @@ jobs:
             python -m unittest discover -s tests -p "$test" -v
           done
           python -m unittest discover -s frt -p test_adapter.py -v
+          python -m unittest discover -s frt -p test_workflow_parity.py -v
           node --check web/app.js
           node --check web/static-catalog.js
           python -c 'import sys;sys.path.insert(0,"src");from state_checkpoint import direct_contract_digest;print("FRT_OFFLINE_CONTRACT="+direct_contract_digest())'
