@@ -11,10 +11,25 @@ def load(filename,upstream=False):
     path=(UPSTREAM if upstream else ROOT/".github/workflows")/filename
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
-def original_steps(job):
+def original_steps(job, name=None):
+    """Strip only the explicit FRT-only adapter differences, not core steps."""
     job=copy.deepcopy(job)
     job["steps"]=[s for s in job["steps"]
                   if s.get("name")!="使用唯一 FR 核心程式"]
+    for step in job["steps"]:
+        if step.get("name")=="取得程式碼" and step.get("with",{}).get("fetch-depth")==1:
+            # FRT's own repo is shallow; the immutable FR core is fetched separately.
+            step["with"]["fetch-depth"]=0
+    if name=="ingest":
+        for step in job["steps"]:
+            if step.get("name")=="手動發布前執行核心程式回歸測試":
+                assert "python -m unittest discover -s frt/tests -v" in step["run"]
+                step["run"]=step["run"].replace(
+                    "python -m unittest discover -s frt/tests -v\n","")
+            if step.get("name")=="恢復 HF 唯一持久精簡資料庫（60 天價格）":
+                assert "FRT_REBUILD" in step.get("env",{})
+                step["env"]["FR_REBUILD"]=step["env"].pop("FRT_REBUILD")
+                step["run"]=step["run"].replace("FRT_REBUILD","FR_REBUILD")
     return job
 
 class WorkflowParity(unittest.TestCase):
@@ -23,7 +38,7 @@ class WorkflowParity(unittest.TestCase):
         frt=load("crawl.yml")["jobs"]
         self.assertEqual(set(frt)-set(upstream),{"discovery_plan","national_discovery_workers"})
         for name in set(upstream)-{"discover_once"}:
-            self.assertEqual(original_steps(frt[name]),upstream[name],
+            self.assertEqual(original_steps(frt[name],name),upstream[name],
                 f"FRT {name} diverges from canonical FR")
         job=original_steps(frt["discover_once"])
         job.pop("needs",None)
@@ -45,12 +60,21 @@ class WorkflowParity(unittest.TestCase):
         for filename in ("pages.yml","cleanup.yml"):
             original=load(filename,upstream=True)["jobs"]
             derivative=load(filename)["jobs"]
-            self.assertEqual(set(derivative), set(original),\n                             f"{filename}: unexpected or missing jobs")\n            for name in original:
+            extra=set(derivative)-set(original)
+            # FRT retains its specifically requested obsolete-workflow cleanup.
+            self.assertEqual(extra, {"prune_obsolete_workflows"} if filename=="cleanup.yml" else set())
+            self.assertFalse(set(original)-set(derivative), f"{filename}: missing FR jobs")
+            for name in original:
                 job=original_steps(derivative[name])
                 # Only publication destination URL differs for Pages.
                 if filename=="pages.yml" and name=="deploy":
                     pass
                 expected=copy.deepcopy(original[name])
+                if filename=="cleanup.yml" and name=="cleanup":
+                    # This FRT-only push guard protects the scheduled nationwide
+                    # pipeline and is not a second data-processing algorithm.
+                    self.assertIn("github.ref == 'refs/heads/main'", job["if"])
+                    job["if"]=expected["if"]
                 # All resource URL substitutions for pages are done in YAML source.
                 def fmt(v):
                     if isinstance(v,str):

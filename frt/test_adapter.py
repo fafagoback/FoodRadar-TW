@@ -45,6 +45,22 @@ class FRTOneSourceAcceptance(unittest.TestCase):
         self.assertFalse(compatible_direct_contract(
             {"format":"foodradar-checkpoint-v4","contract_digest":"foreign"},ROOT))
 
+    def test_exact_frt_prior_compact_checkpoint_is_reusable(self):
+        from state_checkpoint import (direct_contract_digest,
+            compatible_direct_contract, REVIEWED_CAPTURE_ONLY_DIGESTS)
+        current=direct_contract_digest(ROOT)
+        self.assertIn(current, REVIEWED_CAPTURE_ONLY_DIGESTS)
+        prior=REVIEWED_CAPTURE_ONLY_DIGESTS[current]
+        self.assertEqual(set(prior), {
+            "f77b55027cd8e96a6786fe1f92bb046e5e59bd7742b697798bd6d491ddd1aafb",
+            "239c98c0b2d81f823ad471d1bb765df166d9a4328c952fdd3b4cab74b9e2cfd2",
+        })
+        for digest in prior:
+            self.assertTrue(compatible_direct_contract(
+                {"format":"foodradar-checkpoint-v4","contract_digest":digest},ROOT))
+        self.assertFalse(compatible_direct_contract(
+            {"format":"foodradar-checkpoint-v4","contract_digest":"0"*64},ROOT))
+
     def test_15_way_concurrent_ue_scan_merges_into_genuine_fr_format(self):
         cfg=load(ROOT/"config.json")
         uid=str(uuid.UUID(int=123))
