@@ -87,18 +87,7 @@ def main():
             else:
                 shutil.copy2(source, destination)
         shutil.copy2(ROOT/"frt/national_discovery.py", ROOT/"src/national_discovery.py")
-        shutil.copy2(ROOT/"frt/hf_retention.py", ROOT/"src/hf_retention.py")
-        # FRT storage adapter extends the shared core with retired manifest receipts.
-        replace_file("src/pipeline.py", [
-            ('    batch = str(meta.get("batch_id") or "")\n',
-             '    if meta.get("_frt_retired") is True:\n        return meta["replay"]\n    batch = str(meta.get("batch_id") or "")\n'),
-            ('    if not manifests:\n        raise RuntimeError(f\'No immutable snapshots under {folder}/Raw; refusing DB update\')\n',
-             '    if not manifests and config.get("hf_raw_retention_days") != 7:\n        raise RuntimeError(f\'No immutable snapshots under {folder}/Raw; refusing DB update\')\n'),
-            ('        records = list(executor.map(fetch_manifest, manifests))\n',
-             '        records = list(executor.map(fetch_manifest, manifests))\n    if config.get("hf_raw_retention_days") == 7:\n        from hf_retention import history_records\n        records = history_records(api, records)\n'),
-            ('    restored=None if rebuild_all else restore_direct(records,config)\n',
-             '    restored=None if rebuild_all else restore_direct(records,config)\n    retired_count = sum(row[1].get("_frt_retired") is True for row in records)\n    if retired_count and (not restored or restored[2] < retired_count):\n        raise RuntimeError("Expired Raw requires a valid durable checkpoint; refusing incomplete rebuild")\n'),
-        ])
+        # Raw retention and verified price expiry are now shared FR core modules.
         # FRT values only. Algorithms and data contracts stay in FR.
         for path in [
             "src/raw_capture.py", "scripts/bootstrap_hf_dataset.py",
@@ -164,7 +153,7 @@ def main():
         frconfig=json.loads((old/"config.json").read_text(encoding="utf-8"))
         frconfig.update(hf_repo_id=settings["hf_repo_id"],hf_folder=settings["hf_folder"],
                         discovery_scope="custom", discovery_points=points, max_pages=0,
-                        hf_raw_retention_days=settings.get("hf_raw_retention_days", 7))
+                        hf_raw_retention_days=settings["hf_raw_retention_days"])
         (ROOT/"config.json").write_text(json.dumps(frconfig,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
         (ROOT/"fr-core-revision.txt").write_text(sha+"\n",encoding="utf-8")
         print(json.dumps({"fr_upstream_sha":sha,"fetched_core":"FoodRadar","FRT_UE_points":len(points),
