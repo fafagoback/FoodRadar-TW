@@ -78,7 +78,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: 零 UE 請求，原始資料不重下載
+      - name: 以 Supabase 游標分批建池（不重新下載原始資料或呼叫 UE）
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/db_stage_plan.py --source-run-id "${{ inputs.source_run_id || '45886126553' }}"
