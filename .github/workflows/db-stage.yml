@@ -22,7 +22,8 @@ permissions:
   actions: read
 concurrency:
   group: frt-db-stage
-  cancel-in-progress: false
+  # Only the explicit wrong-batch cancellation stops a previous run.
+  cancel-in-progress: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[db-cancel-invalid]') }}
 jobs:
   verify:
     name: 離線語法與工作池測試（無 UE API）
