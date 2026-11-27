@@ -8,7 +8,7 @@ on:
       mode:
         description: 'verify=離線測試；run=以既有爬蟲 Artifact 更新 DB'
         type: choice
-        options: [verify, run]
+        options: [verify, validate, run]
         default: verify
       source_run_id:
         description: '來源爬蟲 Action Run ID'
@@ -65,7 +65,7 @@ jobs:
   db_00:
     name: DB 00｜依既有爬蟲結果建立專用 Supabase 工作池
     needs: verify
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'run') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[db-plan-smoke]')) }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && (inputs.mode == 'run' || inputs.mode == 'validate')) || (github.event_name == 'push' && (contains(github.event.head_commit.message, '[db-plan-smoke]') || contains(github.event.head_commit.message, '[db-full-verify]'))) }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -90,7 +90,7 @@ jobs:
   db_workers:
     name: DB ${{ matrix.worker }}｜動態領下一家店
     needs: db_00
-    if: ${{ needs.db_00.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.mode == 'run' }}
+    if: ${{ needs.db_00.result == 'success' && ((github.event_name == 'workflow_dispatch' && (inputs.mode == 'run' || inputs.mode == 'validate')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[db-full-verify]'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -121,7 +121,7 @@ jobs:
           nohup python -u scripts/db_stage_worker.py heartbeat \
             --index "${{ matrix.worker }}" --done-file "$DONE_FILE" > db-stage-heartbeat.log 2>&1 < /dev/null &
           python -u scripts/db_stage_worker.py worker --index "${{ matrix.worker }}" \
-            --source-run-id "${{ inputs.source_run_id }}" --batch-id "${{ inputs.batch_id }}"
+            --source-run-id "${{ inputs.source_run_id || '45886126553' }}" --batch-id "${{ inputs.batch_id || '20261126072649' }}"
       - uses: actions/upload-artifact@v4
         with:
           name: db-worker-${{ github.run_id }}-${{ matrix.worker }}
@@ -141,7 +141,7 @@ jobs:
   hf_16:
     name: HF 16｜獨立確認既有 Raw 檔案
     needs: db_00
-    if: ${{ needs.db_00.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.mode == 'run' }}
+    if: ${{ needs.db_00.result == 'success' && ((github.event_name == 'workflow_dispatch' && (inputs.mode == 'run' || inputs.mode == 'validate')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[db-full-verify]'))) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -153,7 +153,7 @@ jobs:
       - name: 只確認 HF 已上傳資料，絕不重新爬取
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          BATCH_ID: ${{ inputs.batch_id }}
+          BATCH_ID: ${{ inputs.batch_id || '20261126072649' }}
         run: |
           python - <<'PY'
           import json,os
@@ -176,7 +176,7 @@ jobs:
   db_recovery_plan:
     name: DB 故障接手｜只重新分配尚未持久化的店家
     needs: [db_00, db_workers]
-    if: ${{ always() && !cancelled() && needs.db_00.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.mode == 'run' }}
+    if: ${{ always() && !cancelled() && needs.db_00.result == 'success' && ((github.event_name == 'workflow_dispatch' && (inputs.mode == 'run' || inputs.mode == 'validate')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[db-full-verify]'))) }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -244,7 +244,7 @@ jobs:
           nohup python -u scripts/db_stage_worker.py heartbeat \
             --index "${{ matrix.worker }}" --done-file "$DONE_FILE" > db-stage-heartbeat.log 2>&1 < /dev/null &
           python -u scripts/db_stage_worker.py worker --index "${{ matrix.worker }}" \
-            --source-run-id "${{ inputs.source_run_id }}" --batch-id "${{ inputs.batch_id }}"
+            --source-run-id "${{ inputs.source_run_id || '45886126553' }}" --batch-id "${{ inputs.batch_id || '20261126072649' }}"
       - name: 上傳故障接手成果
         uses: actions/upload-artifact@v4
         with:
@@ -338,8 +338,13 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -u scripts/db_stage_merge.py --source-run-id "${{ inputs.source_run_id }}" \
-            --batch-id "${{ inputs.batch_id }}"
+          if [[ "${{ github.event_name }}" == "push" || "${{ inputs.mode }}" == "validate" ]]; then
+            python -u scripts/db_stage_merge.py --source-run-id "${{ inputs.source_run_id || '45886126553' }}" \
+              --batch-id "${{ inputs.batch_id || '20261126072649' }}" --verify-only
+          else
+            python -u scripts/db_stage_merge.py --source-run-id "${{ inputs.source_run_id }}" \
+              --batch-id "${{ inputs.batch_id }}"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: db-stage-verified-checkpoint
@@ -352,7 +357,7 @@ jobs:
   web_build:
     name: 第三階段｜從已持久化 DB 建置網站資料
     needs: db_17
-    if: ${{ needs.db_17.result == 'success' }}
+    if: ${{ needs.db_17.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.mode == 'run' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     permissions:
@@ -422,4 +427,31 @@ jobs:
           if int(state.get('pending',0))!=50741:raise SystemExit('Not all stores seeded')
           print('FRT_DB_POOL_REAL_PURGE=',pool.purge(),flush=True)
           if pool.status():raise SystemExit('Test pool not cleared')
+          PY
+
+  full_verify_cleanup:
+    name: 全台離線驗證結束後清理專用 DB 工作池
+    needs: [db_00, db_workers, db_recovery_plan, db_recovery_workers, hf_16, db_17]
+    if: ${{ always() && github.event_name == 'push' && contains(github.event.head_commit.message, '[db-full-verify]') && needs.db_00.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'requests>=2.31,<3'
+      - name: 全部工作機停止後回收租約及測試工作池
+        run: |
+          python - <<'PY'
+          import json,sys
+          sys.path.insert(0,'src')
+          from db_task_pool import DBTaskPool
+          pool=DBTaskPool()
+          print('FRT_DB_VERIFY_FINAL_STATUS='+json.dumps(pool.status()),flush=True)
+          print('FRT_DB_VERIFY_RELEASE='+json.dumps(pool.requeue()),flush=True)
+          print('FRT_DB_VERIFY_CLEANUP='+json.dumps(pool.purge()),flush=True)
           PY
