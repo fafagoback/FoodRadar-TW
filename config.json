@@ -1,5 +1,5 @@
 {
-  "fr_core_sha": "e94752c901dbe75865fc48745036e536e77ba929",
+  "fr_core_sha": "395bb34a8baf3ebb7d7dbac97151924125286c25",
   "scan_points_csv": "data/seeds/taiwan_scan_points_3km_land_only.csv",
   "hf_repo_id": "hub-google/Foodradar-TW",
   "hf_folder": "Raw",
