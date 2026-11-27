@@ -4,12 +4,21 @@ on:
   push:
     branches: [main]
     paths: ['.github/workflows/crawl.yml']
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'verify=只驗證；recover=使用 HF 已有資料救援發布（不爬蟲）'
+        type: choice
+        options: [verify, recover]
+        default: verify
+        required: true
 permissions:
   actions: write
   contents: read
 jobs:
   stop_existing:
     name: 停止所有 FRT 爬蟲執行
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: 取消進行中及等待中的爬蟲
@@ -54,3 +63,163 @@ jobs:
           python -m unittest discover -s tests -p test_parallel_worker_slots.py -v
           value=$(python scripts/save_crawl_settings.py --read)
           echo "Supabase 現有執行緒設定：$value" >> "$GITHUB_STEP_SUMMARY"
+
+  verify_offline:
+    name: 離線救援回歸測試（零 UE 請求）
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[frt-offline-recover]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 使用唯一 FR 核心程式
+        run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 離線回歸與語法驗證
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q src scripts tests frt
+          for test in test_v2_integration.py test_verified_prices_v2.py test_partial_raw_replay.py test_compact_direct.py test_compact_incremental.py test_incremental_checkpoint.py test_hf_retention.py test_price_retention.py test_static_catalog.py test_static_projection_parity.py test_release_policy.py; do
+            python -m unittest discover -s tests -p "$test" -v
+          done
+          python -m unittest discover -s frt -p test_adapter.py -v
+          node --check web/app.js
+          node --check web/static-catalog.js
+          python -c 'import sys;sys.path.insert(0,"src");from state_checkpoint import direct_contract_digest;print("FRT_OFFLINE_CONTRACT="+direct_contract_digest())'
+
+  offline_plan:
+    name: 盤點 HF 封存批次與既有資料庫
+    needs: [verify_offline, stop_existing]
+    if: ${{ !cancelled() && needs.verify_offline.result == 'success' && (needs.stop_existing.result == 'success' || needs.stop_existing.result == 'skipped') && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'recover') || contains(github.event.head_commit.message, '[frt-offline-recover]')) }}
+    runs-on: ubuntu-latest
+    outputs:
+      slots: ${{ steps.plan.outputs.slots }}
+      pending: ${{ steps.plan.outputs.pending }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 讀取既有資料清單與驗證 checkpoint
+        id: plan
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
+        run: python scripts/plan_offline_replay.py
+
+  offline_replay:
+    name: 第16台｜依序救援封存批次 ${{ matrix.slot }}
+    needs: [offline_plan]
+    if: ${{ needs.offline_plan.outputs.pending != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        slot: ${{ fromJSON(needs.offline_plan.outputs.slots) }}
+    concurrency:
+      group: foodradar-database-publisher
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 取得上一批持久資料庫
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
+        run: python src/hf_retention.py restore
+      - name: 更新下一批並立即驗證保存至 HF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
+          FR_RAW_DECODE_WORKERS: '3'
+        run: |
+          df -h
+          python -u scripts/replay_next_raw.py
+          df -h
+
+  offline_build:
+    name: 第十六台｜彙整驗證既有資料庫並發布靜態資料
+    needs: [offline_plan, offline_replay]
+    if: ${{ !cancelled() && needs.offline_plan.result == 'success' && (needs.offline_replay.result == 'success' || (needs.offline_replay.result == 'skipped' && needs.offline_plan.outputs.pending == '0')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    concurrency:
+      group: foodradar-database-publisher
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 恢復全部已驗證資料庫
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
+        run: python src/hf_retention.py restore
+      - name: 由已保存資料庫生成網站（禁止重播原始資料）
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_XET_CHUNK_CACHE_SIZE_BYTES: '0'
+          FOODRADAR_PERSIST_REPLAY_PROGRESS: '1'
+          FOODRADAR_REQUIRE_COMPLETE_CHECKPOINT: '1'
+        run: |
+          df -h
+          /usr/bin/time -v python -u scripts/prepare_hf_release.py
+          df -h
+      - name: 整理已驗證資料供 Pages Artifact 使用
+        run: |
+          set -euo pipefail
+          batch=$(cat data/latest.txt)
+          mv "data/$batch/static-public" pages-static-source
+          test -s pages-static-source/current.json
+      - name: 保存已驗證靜態資料為 Pages 來源 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-static-source
+          path: pages-static-source/
+          if-no-files-found: error
+          retention-days: 5
+          compression-level: 0
+      - name: 保存救援診斷報告
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-data-validation
+          path: |
+            data/**/raw-manifest-index.json
+            data/**/direct-db-report.json
+            data/**/quarantine-report.json
+            packed-report.json
+            pages-static-source/current.json
+          if-no-files-found: ignore
+          retention-days: 5
+
+  offline_deploy:
+    name: 已有資料驗證完成後部署網站
+    needs: [offline_build]
+    if: ${{ needs.offline_build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: 只通知已完成稽核的 Pages 部署
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)
+          test "$head" = "$GITHUB_SHA"
+          gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main -f source_run_id="$GITHUB_RUN_ID" -f source_sha="$GITHUB_SHA"

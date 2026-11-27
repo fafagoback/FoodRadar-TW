@@ -47,8 +47,13 @@ class FRTOneSourceAcceptance(unittest.TestCase):
 
     def test_exact_frt_prior_compact_checkpoint_is_reusable(self):
         from state_checkpoint import (direct_contract_digest,
-            compatible_direct_contract, REVIEWED_CAPTURE_ONLY_DIGESTS)
-        current=direct_contract_digest(ROOT)
+            compatible_direct_contract, REVIEWED_CAPTURE_ONLY_DIGESTS,
+            REVIEWED_REPLAY_FIX_DIGESTS)
+        actual=direct_contract_digest(ROOT)
+        current=REVIEWED_REPLAY_FIX_DIGESTS.get(actual,actual)
+        if current != actual:
+            self.assertTrue(compatible_direct_contract(
+                {"format":"foodradar-checkpoint-v4","contract_digest":current},ROOT))
         self.assertIn(current, REVIEWED_CAPTURE_ONLY_DIGESTS)
         prior=REVIEWED_CAPTURE_ONLY_DIGESTS[current]
         self.assertEqual(set(prior), {
