@@ -65,7 +65,7 @@ jobs:
   db_00:
     name: DB 00｜依既有爬蟲結果建立專用 Supabase 工作池
     needs: verify
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'run' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'run') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[db-plan-smoke]')) }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -81,7 +81,7 @@ jobs:
       - name: 零 UE 請求，原始資料不重下載
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/db_stage_plan.py --source-run-id "${{ inputs.source_run_id }}"
+        run: python scripts/db_stage_plan.py --source-run-id "${{ inputs.source_run_id || '45886126553' }}"
       - uses: actions/upload-artifact@v4
         with:
           name: db-stage-plan
@@ -90,7 +90,7 @@ jobs:
   db_workers:
     name: DB ${{ matrix.worker }}｜動態領下一家店
     needs: db_00
-    if: ${{ needs.db_00.result == 'success' }}
+    if: ${{ needs.db_00.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.mode == 'run' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -141,7 +141,7 @@ jobs:
   hf_16:
     name: HF 16｜獨立確認既有 Raw 檔案
     needs: db_00
-    if: ${{ needs.db_00.result == 'success' }}
+    if: ${{ needs.db_00.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.mode == 'run' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -267,3 +267,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run pages.yml --ref main -f source_run_id="$GITHUB_RUN_ID" -f source_sha="$GITHUB_SHA"
+
+  plan_smoke_cleanup:
+    name: 測試完成後清空 DB 專用池（不影響爬蟲）
+    needs: db_00
+    if: ${{ always() && needs.db_00.result == 'success' && github.event_name == 'push' && contains(github.event.head_commit.message, '[db-plan-smoke]') }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'requests>=2.31,<3'
+      - name: 驗證工作池數量並清空測試任務
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0,'src')
+          from db_task_pool import DBTaskPool
+          pool=DBTaskPool()
+          state=pool.status()
+          print('FRT_DB_POOL_REAL_SEED_TEST=',state,flush=True)
+          if int(state.get('pending',0))!=50741:raise SystemExit('Not all stores seeded')
+          print('FRT_DB_POOL_REAL_PURGE=',pool.purge(),flush=True)
+          if pool.status():raise SystemExit('Test pool not cleared')
+          PY
