@@ -9,6 +9,8 @@ UPSTREAM=ROOT/"frt/.upstream-workflows"
 
 def load(filename,upstream=False):
     path=(UPSTREAM if upstream else ROOT/".github/workflows")/filename
+    if not upstream and filename=="crawl.yml" and "全台爬蟲已停止" in path.read_text(encoding="utf-8"):
+        path=ROOT/"frt/crawl.resume.yml"
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 def original_steps(job, name=None):
