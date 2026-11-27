@@ -58,3 +58,20 @@ jobs:
           else
             python3 src/hf_retention.py cleanup
           fi
+
+  prune_obsolete_workflows:
+    name: 刪除 FRT Actions 左側多餘 Workflow 與舊 Runs
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[frt-workflow-prune]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+      - name: 清除非正式 Workflow 執行紀錄並驗證清單
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 -u frt/prune_obsolete_workflows.py
