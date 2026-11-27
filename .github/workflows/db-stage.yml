@@ -19,6 +19,10 @@ on:
       batch_id:
         description: 'HF Raw 14 碼批次'
         type: string
+      db_workers:
+        description: 'DB 運算機起始數量（預設 15，可調整，不影響爬蟲）'
+        type: number
+        default: 15
 permissions:
   contents: read
   actions: read
@@ -71,6 +75,9 @@ jobs:
   db_00:
     name: DB 00｜依既有爬蟲結果建立專用 Supabase 工作池
     needs: verify
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      parallel: ${{ steps.matrix.outputs.parallel }}
     if: ${{ (github.event_name == 'workflow_dispatch' && (inputs.mode == 'run' || inputs.mode == 'validate')) || (github.event_name == 'push' && (contains(github.event.head_commit.message, '[db-plan-smoke]') || contains(github.event.head_commit.message, '[db-full-verify]'))) }}
     runs-on: ubuntu-latest
     permissions:
@@ -88,6 +95,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/db_stage_plan.py --source-run-id "${{ inputs.source_run_id || '45886126553' }}" --batch-id "${{ inputs.batch_id || '20261127071423' }}"
+      - name: 由 00 號產生本輪 DB 工作機矩陣
+        id: matrix
+        env:
+          DB_WORKER_COUNT: ${{ inputs.db_workers || '15' }}
+        run: |
+          python - <<'PY'
+          import json,os
+          count=int(os.environ['DB_WORKER_COUNT'])
+          if count<1:raise SystemExit('DB worker count must be positive')
+          workers=[f'{i:02d}' for i in range(1,count+1)]
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+            f.write('matrix='+json.dumps(workers,separators=(',',':'))+'\n')
+            f.write('parallel='+str(count)+'\n')
+          print('FOODRADAR_DB_WORKER_MATRIX='+json.dumps({
+            'initial_workers':count,'dynamic_pool':True}),flush=True)
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: db-stage-plan
@@ -101,9 +124,9 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      max-parallel: 15
+      max-parallel: ${{ fromJSON(needs.db_00.outputs.parallel) }}
       matrix:
-        worker: ['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15']
+        worker: ${{ fromJSON(needs.db_00.outputs.matrix) }}
     permissions:
       id-token: write
       actions: read
@@ -217,9 +240,9 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      max-parallel: 15
+      max-parallel: ${{ fromJSON(needs.db_00.outputs.parallel) }}
       matrix:
-        worker: ['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15']
+        worker: ${{ fromJSON(needs.db_00.outputs.matrix) }}
     permissions:
       id-token: write
       actions: read
