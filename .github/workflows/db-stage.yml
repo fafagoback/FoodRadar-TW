@@ -1,4 +1,5 @@
 name: FRT 04｜DB 第二階段工作池（離線）
+# Full verification consumes only stored crawl artifacts, never calls UE or publishes live DB.
 on:
   push:
     branches: [main]
