@@ -173,10 +173,49 @@ jobs:
           if sha and sha!=meta['archive_sha256']:raise SystemExit('Raw SHA mismatch')
           print('HF_RAW_AVAILABLE',batch,files[0].size)
           PY
+  db_gate:
+    name: DB 工作池｜核對全部店家完成或符合 5% 失敗率
+    needs: [db_00, db_workers, hf_16]
+    if: ${{ always() && !cancelled() && needs.db_00.result == 'success' && needs.hf_16.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'requests>=2.31,<3'
+      - uses: actions/download-artifact@v4
+        with:
+          name: db-stage-plan
+          path: data/
+      - name: 確認任務全數有結果，即使個別工作機曾故障仍可接手
+        run: |
+          python - <<'PY'
+          import sys,json
+          from pathlib import Path
+          sys.path.insert(0,'src')
+          from db_task_pool import DBTaskPool
+          plan=json.loads(Path('data/db-stage-plan.json').read_text())
+          status=DBTaskPool().status()
+          expected=plan['stores']
+          done=int(status.get('completed',0))
+          failed=int(status.get('failed',0))
+          pending=sum(int(v) for k,v in status.items() if k not in ('completed','failed'))
+          print('FOODRADAR_DB_GATE='+json.dumps({
+            'expected':expected,'completed':done,'failed':failed,'outstanding':pending}),flush=True)
+          if pending or done+failed!=expected:
+            raise SystemExit('Unfinished or duplicated DB task; previous verified version preserved')
+          if failed*20>expected:
+            raise SystemExit('Store failure rate over 5 percent')
+          PY
   db_17:
     name: DB 17｜核對完成結果與增量 DB
-    needs: [db_workers, hf_16]
-    if: ${{ needs.db_workers.result == 'success' && needs.hf_16.result == 'success' }}
+    needs: [db_gate]
+    if: ${{ needs.db_gate.result == 'success' }}
     concurrency:
       group: foodradar-database-publisher
       cancel-in-progress: false
