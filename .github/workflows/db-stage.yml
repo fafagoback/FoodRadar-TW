@@ -1,0 +1,185 @@
+name: FRT 04｜DB 第二階段工作池（離線）
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/db-stage.yml']
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'verify=離線測試；run=以既有爬蟲 Artifact 更新 DB'
+        type: choice
+        options: [verify, run]
+        default: verify
+      source_run_id:
+        description: '來源爬蟲 Action Run ID'
+        type: string
+      batch_id:
+        description: 'HF Raw 14 碼批次'
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: frt-db-stage
+  cancel-in-progress: false
+jobs:
+  verify:
+    name: 離線語法與工作池測試（無 UE API）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: |
+          python -m compileall -q src/db_task_pool.py scripts/db_stage_plan.py scripts/db_stage_worker.py scripts/db_stage_merge.py
+          python -m unittest discover -s tests -p test_db_task_pool.py -v
+          python -m unittest discover -s frt -p test_adapter.py -v
+  db_00:
+    name: DB 00｜依既有爬蟲結果建立專用 Supabase 工作池
+    needs: verify
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'run' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 零 UE 請求，原始資料不重下載
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/db_stage_plan.py --source-run-id "${{ inputs.source_run_id }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: db-stage-plan
+          path: data/db-stage-plan.json
+          if-no-files-found: error
+  db_workers:
+    name: DB ${{ matrix.worker }}｜動態領下一家店
+    needs: db_00
+    if: ${{ needs.db_00.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker: ['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15']
+    permissions:
+      id-token: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: db-stage-plan
+          path: data/
+      - name: 讀取既有 Artifact、驗證雜湊、解析商品
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -u scripts/db_stage_worker.py worker --index "${{ matrix.worker }}" \
+            --source-run-id "${{ inputs.source_run_id }}" --batch-id "${{ inputs.batch_id }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: db-worker-${{ github.run_id }}-${{ matrix.worker }}
+          path: data/db-worker-${{ matrix.worker }}/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 5
+      - name: 儲存成功才完成任務
+        run: python scripts/db_stage_worker.py finalize --index "${{ matrix.worker }}"
+  hf_16:
+    name: HF 16｜獨立確認既有 Raw 檔案
+    needs: db_00
+    if: ${{ needs.db_00.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'huggingface_hub>=0.30,<2'
+      - name: 只確認 HF 已上傳資料，絕不重新爬取
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BATCH_ID: ${{ inputs.batch_id }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from huggingface_hub import HfApi,hf_hub_download
+          cfg=json.loads(Path('config.json').read_text())
+          batch=os.environ['BATCH_ID']
+          if len(batch)!=14 or not batch.isdecimal():raise SystemExit('Invalid batch ID')
+          repo=cfg['hf_repo_id'];folder=cfg['hf_folder'].strip('/')
+          meta=json.loads(Path(hf_hub_download(repo,f'{folder}/{batch}/manifest.json',
+            repo_type='dataset',token=os.environ['HF_TOKEN'])).read_text())
+          files=HfApi(token=os.environ['HF_TOKEN']).get_paths_info(
+            repo,[meta['archive_path']],repo_type='dataset',expand=True)
+          if meta['batch_id']!=batch or len(files)!=1:raise SystemExit('Raw batch absent')
+          lfs=getattr(files[0],'lfs',None)
+          sha=lfs.get('sha256') if isinstance(lfs,dict) else getattr(lfs,'sha256',None)
+          if sha and sha!=meta['archive_sha256']:raise SystemExit('Raw SHA mismatch')
+          print('HF_RAW_AVAILABLE',batch,files[0].size)
+          PY
+  db_17:
+    name: DB 17｜核對完成結果與增量 DB
+    needs: [db_workers, hf_16]
+    if: ${{ needs.db_workers.result == 'success' && needs.hf_16.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      id-token: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: db-stage-plan
+          path: data/
+      - name: 取得本輪 15 台運算成果
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p data/db-artifacts
+          gh run download "${{ github.run_id }}" --pattern "db-worker-${{ github.run_id }}-*" --dir data/db-artifacts
+      - name: 讀取 HF 上一版持久 DB
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python src/hf_retention.py restore
+      - name: 嚴格核對歷史價格後寫 DB
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -u scripts/db_stage_merge.py --source-run-id "${{ inputs.source_run_id }}" \
+            --batch-id "${{ inputs.batch_id }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: db-stage-verified-checkpoint
+          path: |
+            data/state-checkpoint/
+            data/db-stage-checkpoint/
+          if-no-files-found: error
+          retention-days: 5
