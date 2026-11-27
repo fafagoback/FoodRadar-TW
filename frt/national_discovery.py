@@ -10,7 +10,6 @@ import json
 import os
 import sys
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -18,10 +17,10 @@ sys.path.insert(0,str(ROOT/"src"))
 from discovery_coverage import get_points,validate_points,merge_store_points
 from distributed_crawl import latest_raw_workload_weights
 from feed_core import scan_single_point
-from menu_core import canonical_store_uuid
+from menu_core import canonical_store_uuid, global_limiter
+from adaptive_threads import run_adaptive, DEFAULT_THREADS, valid_threads
 
 WORKERS=15
-SCAN_THREADS_PER_RUNNER=2
 
 def load(path):return json.loads(Path(path).read_text(encoding="utf-8"))
 def write(path,value):
@@ -70,14 +69,18 @@ def worker(config,index,root=ROOT):
     raw=base/"raw"
     raw.mkdir(parents=True,exist_ok=False)
     results={}
-    with ThreadPoolExecutor(max_workers=SCAN_THREADS_PER_RUNNER) as pool:
-        futures={pool.submit(_scan,p,index,config,raw):p for p in points}
-        for future in as_completed(futures):
-            point=futures[future]
-            pid,found,pages=future.result()
-            if pid!=point["id"] or not isinstance(pages,int) or pages<1:
-                raise RuntimeError("Incomplete FRT UE point: "+point["id"])
-            results[pid]=(found,pages)
+    initial = int(os.getenv("FRT_DISCOVERY_INITIAL_THREADS", str(DEFAULT_THREADS)))
+    if not valid_threads(initial):
+        raise ValueError("Invalid FRT discovery initial threads")
+    def completed_point(result):
+        pid,found,pages=result
+        if pid in results or not isinstance(pages,int) or pages<1:
+            raise RuntimeError("Duplicate or incomplete FRT UE point: "+pid)
+        results[pid]=(found,pages)
+    # Uses the same completed-task throughput search as FR whole-store crawlers.
+    # Each free discovery slot picks another point independently.
+    learning = run_adaptive(points, lambda point: _scan(point,index,config,raw),
+                            global_limiter, initial, completed_point)
     unique={};reports=[];pages=0
     for point in points:
         found,n=results[point["id"]]
@@ -97,8 +100,9 @@ def worker(config,index,root=ROOT):
         raise ValueError("Missing original HTTP capture from one or more UE points")
     write(base/"part.json",{**identity(),"plan_sha256":sha,"index":index,
         "coverage":{"scope":"custom","plan":points,"reports":reports},
-        "pages":pages,"stores":list(unique.values()),"raw_checksums":raw_hashes})
-    print(f"FRT_UE_SHARD={index} POINTS={len(points)} UNIQUE_STORES={len(unique)} PAGES={pages}",flush=True)
+        "pages":pages,"stores":list(unique.values()),"raw_checksums":raw_hashes,
+        "thread_learning":learning})
+    print(f"FRT_UE_SHARD={index} POINTS={len(points)} UNIQUE_STORES={len(unique)} PAGES={pages} LEARNED={learning.get('optimal_threads')}",flush=True)
 
 def merge(config,root=ROOT):
     master,sha=read_plan(root)
