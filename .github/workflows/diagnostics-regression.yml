@@ -28,6 +28,6 @@ jobs:
           assert c["hf_raw_retention_days"]==60
           assert "/functions/v1/frt-task-pool" in Path("src/sb_task_pool.py").read_text()
           assert "foodradar-tw:task-pool" in Path("src/sb_task_pool.py").read_text()
-          assert Path("fr-core-revision.txt").read_text().strip()=="4cf5ef18dd4c1261c96eb5521853eea31f8d7e8e"
+          assert Path("fr-core-revision.txt").read_text().strip()=="b7d01c9933eef2ca7fcd02ba907ac48fce71ad72"
           print("FRT SHARED CORE CONTRACT PASSED")
           PY
