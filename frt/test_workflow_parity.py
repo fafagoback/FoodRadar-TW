@@ -16,11 +16,12 @@ def original_steps(job, name=None):
     job=copy.deepcopy(job)
     job["steps"]=[s for s in job["steps"]
                   if s.get("name")!="使用唯一 FR 核心程式"]
+    for step in job["steps"]:
+        if step.get("name")=="取得程式碼" and step.get("with",{}).get("fetch-depth")==1:
+            # FRT's own repo is shallow; the immutable FR core is fetched separately.
+            step["with"]["fetch-depth"]=0
     if name=="ingest":
         for step in job["steps"]:
-            if step.get("name")=="取得程式碼":
-                assert step.get("with",{}).get("fetch-depth")==1
-                step["with"]["fetch-depth"]=0
             if step.get("name")=="手動發布前執行核心程式回歸測試":
                 assert "python -m unittest discover -s frt/tests -v" in step["run"]
                 step["run"]=step["run"].replace(
@@ -69,6 +70,11 @@ class WorkflowParity(unittest.TestCase):
                 if filename=="pages.yml" and name=="deploy":
                     pass
                 expected=copy.deepcopy(original[name])
+                if filename=="cleanup.yml" and name=="cleanup":
+                    # This FRT-only push guard protects the scheduled nationwide
+                    # pipeline and is not a second data-processing algorithm.
+                    self.assertIn("github.ref == 'refs/heads/main'", job["if"])
+                    job["if"]=expected["if"]
                 # All resource URL substitutions for pages are done in YAML source.
                 def fmt(v):
                     if isinstance(v,str):
