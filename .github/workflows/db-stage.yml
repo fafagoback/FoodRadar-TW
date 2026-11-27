@@ -36,7 +36,32 @@ jobs:
       - run: |
           python -m compileall -q src/db_task_pool.py scripts/db_stage_plan.py scripts/db_stage_worker.py scripts/db_stage_merge.py
           python -m unittest discover -s tests -p test_db_task_pool.py -v
+          python -m unittest discover -s tests -p test_db_stage_integration.py -v
           python -m unittest discover -s frt -p test_adapter.py -v
+  smoke:
+    name: 既有 FRT 原始 Artifact 真實商品解碼（不發 UE API）
+    needs: verify
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[db-smoke]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: 實際下載先前工作機 Artifact 並解碼一間店
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -u scripts/db_stage_smoke.py \
+            --source-run-id 45886126553 \
+            --batch-id 20261126072649 \
+            --source-sha 3fd98536e4807db85acf473cd9d773f177d528a4
   db_00:
     name: DB 00｜依既有爬蟲結果建立專用 Supabase 工作池
     needs: verify
