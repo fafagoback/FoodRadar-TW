@@ -92,6 +92,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          DONE_FILE="data/db-worker-${{ matrix.worker }}.done"
+          nohup python -u scripts/db_stage_worker.py heartbeat \
+            --index "${{ matrix.worker }}" --done-file "$DONE_FILE" > db-stage-heartbeat.log 2>&1 < /dev/null &
           python -u scripts/db_stage_worker.py worker --index "${{ matrix.worker }}" \
             --source-run-id "${{ inputs.source_run_id }}" --batch-id "${{ inputs.batch_id }}"
       - uses: actions/upload-artifact@v4
@@ -102,7 +105,14 @@ jobs:
           compression-level: 1
           retention-days: 5
       - name: 儲存成功才完成任務
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python scripts/db_stage_worker.py finalize --index "${{ matrix.worker }}"
+      - name: 停止上傳期間的租約續約
+        if: always()
+        run: |
+          touch "data/db-worker-${{ matrix.worker }}.done"
+          if test -f db-stage-heartbeat.log; then tail -20 db-stage-heartbeat.log; fi
   hf_16:
     name: HF 16｜獨立確認既有 Raw 檔案
     needs: db_00
@@ -142,6 +152,9 @@ jobs:
     name: DB 17｜核對完成結果與增量 DB
     needs: [db_workers, hf_16]
     if: ${{ needs.db_workers.result == 'success' && needs.hf_16.result == 'success' }}
+    concurrency:
+      group: foodradar-database-publisher
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 350
     permissions:
@@ -183,3 +196,49 @@ jobs:
             data/db-stage-checkpoint/
           if-no-files-found: error
           retention-days: 5
+
+  web_build:
+    name: 第三階段｜從已持久化 DB 建置網站資料
+    needs: db_17
+    if: ${{ needs.db_17.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 frt/bootstrap.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - name: 從 HF 恢復剛剛保存的精簡 DB（不重新處理原始菜單）
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python src/hf_retention.py restore
+      - name: 僅使用完整檢查點建置網站
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FOODRADAR_REQUIRE_COMPLETE_CHECKPOINT: '1'
+        run: |
+          python -u scripts/prepare_hf_release.py
+          test "$(cat data/latest.txt)" = "${{ inputs.batch_id }}"
+          mkdir -p pages-static-source
+          cp -a "data/${{ inputs.batch_id }}/static-public/." pages-static-source/
+          test -s pages-static-source/current.json
+          test -d pages-static-source/blobs
+      - name: 保存已驗證靜態資料為 Pages 來源 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodradar-static-source
+          path: pages-static-source/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: 交給 FRT 02 正式部署並核對線上資料批次
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main -f source_run_id="$GITHUB_RUN_ID" -f source_sha="$GITHUB_SHA"
