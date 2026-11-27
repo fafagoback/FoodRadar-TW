@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: '已通過資料稽核的 01 執行 ID'
+        description: '已通過資料稽核的 FRT 01 或 DB 階段執行 ID'
         required: true
         type: string
       source_sha:
-        description: '來源 01 的完整 commit SHA'
+        description: '資料來源執行的完整 commit SHA'
         required: true
         type: string
 permissions:
@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   ingest-gate:
-    name: 確認爬蟲實際成功發布資料
+    name: 確認爬蟲或 DB 階段實際完成驗證
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -54,10 +54,12 @@ jobs:
           def read(path):
               with urlopen(Request(base + path, headers=headers), timeout=15) as response:
                   return json.load(response)
+          approved_paths = {".github/workflows/crawl.yml", ".github/workflows/db-stage.yml"}
           for _ in range(60):
               source = read(f"/actions/runs/{run_id}")
+              source_path = source.get("path", "").split("@")[0]
               if (source.get("head_branch") != "main" or source.get("head_sha") != sha
-                  or source.get("path", "").split("@")[0] != ".github/workflows/crawl.yml"):
+                  or source_path not in approved_paths):
                   raise SystemExit("非本次正式資料更新，禁止部署")
               if source.get("status") == "completed":
                   break
@@ -72,11 +74,16 @@ jobs:
               jobs.extend(chunk)
               if len(chunk) < 100:
                   break
-          allowed = any(j.get("name", "").startswith("第十六台｜彙整驗證")
-                        and j.get("conclusion") == "success"
-                        and any(s.get("name") == "保存已驗證靜態資料為 Pages 來源 Artifact"
-                                and s.get("conclusion") == "success"
-                                for s in j.get("steps", [])) for j in jobs)
+          expected_name = ("第十六台｜彙整驗證" if source_path.endswith("/crawl.yml")
+                           else "第三階段｜從已持久化 DB 建置網站資料")
+          allowed = any(
+              j.get("name", "").startswith(expected_name)
+              and j.get("conclusion") == "success"
+              and any(s.get("name") == "保存已驗證靜態資料為 Pages 來源 Artifact"
+                      and s.get("conclusion") == "success"
+                      for s in j.get("steps", []))
+              for j in jobs
+          )
           if not allowed:
               raise SystemExit("資料包尚未完整驗證，禁止部署")
           if read("/branches/main")["commit"]["sha"] != sha:
@@ -106,7 +113,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: 取得最新驗證通過的爬蟲資料包
+      - name: 取得最新驗證通過的網站資料包
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -115,9 +122,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p pages-static-source
-          # Only the completed and verified crawl run may supply a deployment.
+          # Only an audited source run may supply a deployment.
           # Never reuse an older artifact or start a deployment from a code push.
-          test -n "$SOURCE_RUN_ID" || { echo '爬蟲尚未完成，禁止部署' >&2; exit 1; }
+          test -n "$SOURCE_RUN_ID" || { echo '資料更新尚未完成，禁止部署' >&2; exit 1; }
           echo "FOODRADAR_ARTIFACT_SOURCE_RUN=$SOURCE_RUN_ID"
           gh run download "$SOURCE_RUN_ID" --name foodradar-static-source --dir pages-static-source
           test -s pages-static-source/current.json
