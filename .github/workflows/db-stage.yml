@@ -1,5 +1,6 @@
 name: FRT 04｜DB 第二階段工作池（離線）
 # Full verification consumes only stored crawl artifacts, never calls UE or publishes live DB.
+# Verify historical checkpoint migration before any new nationwide DB workload.
 on:
   push:
     branches: [main]
