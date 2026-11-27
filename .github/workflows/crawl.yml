@@ -86,6 +86,7 @@ jobs:
           done
           python -m unittest discover -s frt -p test_adapter.py -v
           python -m unittest discover -s frt -p test_workflow_parity.py -v
+          # Reconstructed future FRT workflow contains its original 15-way national discovery stage.
           node --check web/app.js
           node --check web/static-catalog.js
           python -c 'import sys;sys.path.insert(0,"src");from state_checkpoint import direct_contract_digest;print("FRT_OFFLINE_CONTRACT="+direct_contract_digest())'
