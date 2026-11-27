@@ -1,4 +1,5 @@
 name: FRT 01｜全台資料爬取與更新
+# Storage acceptance: rolling 60-day Raw + DB; republish uses sealed HF source only.
 run-name: 'FRT 01｜全台資料爬取與更新｜執行編號 #${{ github.run_number }}'
 on:
   # 整店任務模式：全台正式爬取、HF、DB 與 Pages；保留每日排程。
